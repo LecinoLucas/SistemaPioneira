@@ -128,12 +128,12 @@ export default function History() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold text-foreground">Histórico</h1>
+        <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Histórico</h1>
         <p className="text-muted-foreground mt-2">Acompanhe vendas e movimentações de estoque</p>
       </div>
 
       <Tabs defaultValue="vendas" className="w-full">
-        <TabsList>
+        <TabsList className="grid w-full max-w-md grid-cols-2">
           <TabsTrigger value="vendas">
             <ShoppingCart className="h-4 w-4 mr-2" />
             Vendas
@@ -158,7 +158,7 @@ export default function History() {
             </CardHeader>
             <CardContent className="space-y-4">
               {/* Filtro por tipo */}
-              <div className="flex items-center gap-2">
+              <div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center">
                 <Label htmlFor="filter-tipo">Filtrar por tipo:</Label>
                 <Select value={filterTipo} onValueChange={(value) => {
                   setFilterTipo(value);
@@ -184,6 +184,7 @@ export default function History() {
                 </div>
               ) : (
                 <>
+                  <div className="overflow-auto rounded-md border">
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -275,14 +276,15 @@ export default function History() {
                       )}
                     </TableBody>
                   </Table>
+                  </div>
 
                   {/* Paginação */}
                   {vendasData && vendasData.totalPages > 1 && (
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                       <p className="text-sm text-muted-foreground">
                         Mostrando {((currentPage - 1) * 20) + 1} a {Math.min(currentPage * 20, vendasData.total)} de {vendasData.total} vendas
                       </p>
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-2">
                         <Button
                           variant="outline"
                           size="sm"
@@ -328,6 +330,7 @@ export default function History() {
                   <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
                 </div>
               ) : (
+                <div className="overflow-auto rounded-md border">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -388,6 +391,7 @@ export default function History() {
                     )}
                   </TableBody>
                 </Table>
+                </div>
               )}
             </CardContent>
           </Card>

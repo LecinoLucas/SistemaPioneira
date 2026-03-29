@@ -79,7 +79,7 @@ export default function OrdersReport() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold text-foreground">Relatório de Encomendas</h1>
+        <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Relatório de Encomendas</h1>
         <p className="text-muted-foreground mt-2">Produtos vendidos com estoque negativo (encomendas pendentes)</p>
       </div>
 
@@ -92,7 +92,7 @@ export default function OrdersReport() {
           <CardDescription>Filtre as encomendas por cliente</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex gap-4">
+          <div className="flex flex-col gap-4 sm:flex-row">
             <div className="flex-1 space-y-2">
               <Label htmlFor="nomeCliente">Nome do Cliente</Label>
               <Input
@@ -105,16 +105,16 @@ export default function OrdersReport() {
             </div>
           </div>
 
-          <div className="flex gap-2">
-            <Button onClick={handleFilter} className="gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={handleFilter} className="gap-2 w-full sm:w-auto">
               <Filter className="h-4 w-4" />
               Aplicar Filtros
             </Button>
-            <Button onClick={handleExportPdf} variant="outline" className="gap-2" disabled={exportPdfMutation.isPending}>
+            <Button onClick={handleExportPdf} variant="outline" className="gap-2 w-full sm:w-auto" disabled={exportPdfMutation.isPending}>
               <FileDown className="h-4 w-4" />
               {exportPdfMutation.isPending ? "Gerando..." : "Exportar PDF"}
             </Button>
-            <Button onClick={handleExportExcel} variant="outline" className="gap-2" disabled={exportExcelMutation.isPending}>
+            <Button onClick={handleExportExcel} variant="outline" className="gap-2 w-full sm:w-auto" disabled={exportExcelMutation.isPending}>
               <FileSpreadsheet className="h-4 w-4" />
               {exportExcelMutation.isPending ? "Gerando..." : "Exportar Excel"}
             </Button>
@@ -138,7 +138,7 @@ export default function OrdersReport() {
               <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
             </div>
           ) : encomendas && encomendas.length > 0 ? (
-            <div className="rounded-md border">
+            <div className="rounded-md border overflow-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -157,7 +157,9 @@ export default function OrdersReport() {
                   {encomendas.map((encomenda) => (
                     <TableRow key={encomenda.id}>
                       <TableCell>{new Date(encomenda.dataVenda).toLocaleDateString('pt-BR')}</TableCell>
-                      <TableCell className="font-medium">{encomenda.productName}</TableCell>
+                      <TableCell className="font-medium max-w-[16rem] truncate" title={encomenda.productName}>
+                        {encomenda.productName}
+                      </TableCell>
                       <TableCell>{encomenda.medida}</TableCell>
                       <TableCell>{encomenda.marca || "-"}</TableCell>
                       <TableCell>{encomenda.quantidade}</TableCell>
@@ -171,7 +173,9 @@ export default function OrdersReport() {
                           {Math.abs(encomenda.estoqueAtual)} unidade(s)
                         </span>
                       </TableCell>
-                      <TableCell>{encomenda.nomeCliente || "-"}</TableCell>
+                      <TableCell className="max-w-[14rem] truncate" title={encomenda.nomeCliente || "-"}>
+                        {encomenda.nomeCliente || "-"}
+                      </TableCell>
                       <TableCell className="max-w-xs truncate">{encomenda.observacoes || "-"}</TableCell>
                     </TableRow>
                   ))}

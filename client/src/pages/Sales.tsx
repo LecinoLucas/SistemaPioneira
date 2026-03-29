@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Plus, Trash2, ShoppingCart, Search, UploadCloud } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -40,6 +41,17 @@ interface ImportedDraft {
   documentNumber: string | null;
   parsedAt: string;
   cliente: string | null;
+  telefoneCliente: string | null;
+  vendedor: string | null;
+  dataVenda: string | null;
+  formaPagamento: string | null;
+  formasPagamentoExtraidas: Array<{
+    descricao: string;
+    categoria: "instantaneo" | "entrega" | "cartao" | "boleto" | "dinheiro" | "transferencia" | "outros";
+    vencimento: string | null;
+    valor: number | null;
+    documento: string | null;
+  }>;
   endereco: string | null;
   total: number | null;
   desconto: number | null;
@@ -54,9 +66,32 @@ interface DraftReviewState {
   reviewNote: string;
   includeByIndex: Record<number, boolean>;
   quantityByIndex: Record<number, number>;
+  manualProductByIndex: Record<number, number | null>;
 }
 
-const VENDEDORES = ["Cleonice", "Luciano", "Vanuza", "Thuanny"];
+const DEFAULT_SELLERS = ["Cleonice", "Luciano", "Vanuza", "Thuanny"];
+type PaymentMethodOption = { key: string; label: string; category: string };
+
+const DEFAULT_PAYMENT_METHODS: PaymentMethodOption[] = [
+  { key: "PIX", label: "PIX", category: "Instantâneo" },
+  { key: "RECEBER_NA_ENTREGA", label: "RECEBER NA ENTREGA", category: "Entrega" },
+  { key: "DINHEIRO", label: "DINHEIRO", category: "Dinheiro" },
+  { key: "CARTAO_CREDITO", label: "CARTÃO DE CRÉDITO", category: "Cartão" },
+  { key: "CARTAO_DEBITO", label: "CARTÃO DE DÉBITO", category: "Cartão" },
+  { key: "BOLETO", label: "BOLETO", category: "Boleto" },
+  { key: "TRANSFERENCIA", label: "TRANSFERÊNCIA", category: "Transferência" },
+  { key: "MULTIPLO", label: "MÚLTIPLO (2+ formas)", category: "Combinado" },
+  { key: "OUTROS", label: "OUTROS", category: "Outros" },
+] as const;
+const PAYMENT_CATEGORY_LABELS: Record<string, string> = {
+  instantaneo: "Instantâneo",
+  entrega: "Entrega",
+  cartao: "Cartão",
+  boleto: "Boleto",
+  dinheiro: "Dinheiro",
+  transferencia: "Transferência",
+  outros: "Outros",
+};
 const PERF_LATENCY_WARNING_MS = 500;
 const PERF_LATENCY_CRITICAL_MS = 1200;
 const PERF_RENDER_WARNING = 120;
@@ -64,6 +99,106 @@ const INITIAL_PRODUCT_PRELIST_LIMIT = 20;
 const SEARCH_PRODUCT_LIMIT = 100;
 const INITIAL_VISIBLE_ROWS = 20;
 const SEARCH_VISIBLE_ROWS = 60;
+
+type DraftQuality = {
+  label: "Alta" | "Média" | "Baixa";
+  className: string;
+};
+
+function resolveDraftQuality(draft: ImportedDraft): DraftQuality {
+  const totalItems = draft.itens.length;
+  const recognizedItems = draft.itens.filter((item) => item.productId != null).length;
+  const avgConfidence = totalItems
+    ? draft.itens.reduce((acc, item) => acc + item.confidence, 0) / totalItems
+    : 0;
+  const warningPenalty = draft.warnings.length > 1 ? 0.15 : draft.warnings.length > 0 ? 0.08 : 0;
+  const score = (totalItems ? recognizedItems / totalItems : 0) * 0.65 + avgConfidence * 0.35 - warningPenalty;
+
+  if (score >= 0.8) {
+    return { label: "Alta", className: "bg-emerald-100 text-emerald-700 border-emerald-300" };
+  }
+  if (score >= 0.6) {
+    return { label: "Média", className: "bg-amber-100 text-amber-700 border-amber-300" };
+  }
+  return { label: "Baixa", className: "bg-rose-100 text-rose-700 border-rose-300" };
+}
+
+function parseCurrencyInput(value: string): number | undefined {
+  const normalized = value.replace(/\./g, "").replace(",", ".").trim();
+  if (!normalized) return undefined;
+  const parsed = Number.parseFloat(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function normalizePaymentName(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[_-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function resolveKnownPaymentMethod(value: string, methods: PaymentMethodOption[] = DEFAULT_PAYMENT_METHODS): string | null {
+  const normalized = normalizePaymentName(value);
+  if (!normalized) return null;
+
+  if (normalized.includes("receber na entrega")) return "RECEBER_NA_ENTREGA";
+  if (normalized === "pix") return "PIX";
+  if (normalized.includes("credito")) return "CARTAO_CREDITO";
+  if (normalized.includes("debito")) return "CARTAO_DEBITO";
+  if (normalized.includes("boleto")) return "BOLETO";
+  if (normalized.includes("transferencia") || normalized.includes("ted")) return "TRANSFERENCIA";
+  if (normalized.includes("dinheiro") || normalized.includes("especie")) return "DINHEIRO";
+  if (normalized.includes("multiplo") || normalized.includes("misto")) return "MULTIPLO";
+
+  const fallback = methods.find((item) => normalizePaymentName(item.label) === normalized);
+  return fallback?.key ?? null;
+}
+
+function getPaymentLabelByKey(key: string, methods: PaymentMethodOption[] = DEFAULT_PAYMENT_METHODS): string {
+  const found = methods.find((item) => item.key === key);
+  return found?.label ?? key;
+}
+
+function normalizeSellerName(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/^\d+\s*[-:]\s*/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isSellerTokenMatch(candidate: string, normalizedSeller: string): boolean {
+  if (!candidate || !normalizedSeller) return false;
+  if (candidate === normalizedSeller) return true;
+  if (candidate.includes(normalizedSeller) || normalizedSeller.includes(candidate)) return true;
+  const parts = candidate.split(" ").filter((part) => part.length >= 3);
+  return parts.some((part) => normalizedSeller.includes(part));
+}
+
+function resolveKnownSeller(value: string, sellers: string[] = DEFAULT_SELLERS): string | null {
+  const normalized = normalizeSellerName(value);
+  if (!normalized) return null;
+  const exact = sellers.find((item) => normalizeSellerName(item) === normalized);
+  if (exact) return exact;
+  const fuzzy = sellers.find((item) => isSellerTokenMatch(normalized, normalizeSellerName(item)));
+  if (fuzzy) return fuzzy;
+  return null;
+}
+
+function suggestKnownSeller(value: string, sellers: string[] = DEFAULT_SELLERS): string | null {
+  const normalized = normalizeSellerName(value);
+  if (!normalized) return null;
+  const starts = sellers.find((item) => normalizeSellerName(item).startsWith(normalized));
+  if (starts) return starts;
+  const contains = sellers.find((item) => normalizeSellerName(item).includes(normalized));
+  return contains ?? null;
+}
 
 export default function Sales() {
   const isDev = import.meta.env.DEV;
@@ -73,10 +208,13 @@ export default function Sales() {
   const [selectedProductId, setSelectedProductId] = useState("");
   const [quantidade, setQuantidade] = useState(1);
   const [importFolderPath, setImportFolderPath] = useState("");
+  const [importClientName, setImportClientName] = useState("");
+  const [isImportPanelOpen, setIsImportPanelOpen] = useState(false);
   const [importedDrafts, setImportedDrafts] = useState<ImportedDraft[]>([]);
   const [processedImports, setProcessedImports] = useState<Record<string, boolean>>({});
   const [draftReviewMap, setDraftReviewMap] = useState<Record<string, DraftReviewState>>({});
   const [batchReviewNote, setBatchReviewNote] = useState("");
+  const [importQualityFilter, setImportQualityFilter] = useState<"all" | "high" | "medium" | "low" | "pending">("all");
   const [historySearch, setHistorySearch] = useState("");
   const [historyPage, setHistoryPage] = useState(1);
   const manualFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -106,10 +244,43 @@ export default function Sales() {
   }, [normalizedSearch]);
   const [vendedor, setVendedor] = useState("");
   const [nomeCliente, setNomeCliente] = useState("");
+  const [telefoneCliente, setTelefoneCliente] = useState("");
+  const [enderecoCliente, setEnderecoCliente] = useState("");
+  const [formaPagamento, setFormaPagamento] = useState("");
+  const [dataVenda, setDataVenda] = useState("");
+  const [valorTotalInput, setValorTotalInput] = useState("");
   const [observacoes, setObservacoes] = useState("");
   const [tipoTransacao, setTipoTransacao] = useState<"venda" | "troca" | "brinde" | "emprestimo" | "permuta">("venda");
 
   const utils = trpc.useUtils();
+  const paymentMethodsQuery = trpc.catalogo.listPaymentMethods.useQuery(undefined, {
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const sellersQuery = trpc.catalogo.listSellers.useQuery(undefined, {
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const paymentMethods = useMemo<PaymentMethodOption[]>(() => {
+    const fromCatalog = (paymentMethodsQuery.data ?? [])
+      .filter((item) => item.codigo?.trim() && item.nome?.trim())
+      .map((item) => ({
+        key: item.codigo.trim().toUpperCase(),
+        label: item.nome.trim(),
+        category: item.categoria?.trim() || "Outros",
+      }));
+    return fromCatalog.length > 0 ? fromCatalog : [...DEFAULT_PAYMENT_METHODS];
+  }, [paymentMethodsQuery.data]);
+  const paymentMethodsLoading = paymentMethodsQuery.isLoading;
+  const sellers = useMemo<string[]>(
+    () => {
+      const fromCatalog = (sellersQuery.data ?? [])
+        .map((item) => item.nome?.trim())
+        .filter((item): item is string => Boolean(item));
+      return fromCatalog.length > 0 ? fromCatalog : [...DEFAULT_SELLERS];
+    },
+    [sellersQuery.data]
+  );
   // Busca no backend: retorna uma lista curta e performática para seleção rápida
   const {
     data: products,
@@ -126,6 +297,17 @@ export default function Sales() {
       enabled: true,
       placeholderData: (prev) => prev,
       staleTime: 30_000,
+      refetchOnWindowFocus: false,
+    }
+  );
+  const productsForMappingQuery = trpc.products.list.useQuery(
+    {
+      page: 1,
+      pageSize: 500,
+      includeArchived: false,
+    },
+    {
+      staleTime: 60_000,
       refetchOnWindowFocus: false,
     }
   );
@@ -155,13 +337,15 @@ export default function Sales() {
           const key = draft.fileHash || draft.filePath;
           const includeByIndex: Record<number, boolean> = {};
           const quantityByIndex: Record<number, number> = {};
+          const manualProductByIndex: Record<number, number | null> = {};
           draft.itens.forEach((item, index) => {
             if (item.productId != null) {
               includeByIndex[index] = true;
               quantityByIndex[index] = Math.max(1, item.quantidade);
+              manualProductByIndex[index] = null;
             }
           });
-          next[key] = { reviewed: false, approved: false, reviewNote: "", includeByIndex, quantityByIndex };
+          next[key] = { reviewed: false, approved: false, reviewNote: "", includeByIndex, quantityByIndex, manualProductByIndex };
         }
         return next;
       });
@@ -190,13 +374,15 @@ export default function Sales() {
           if (next[key]) continue;
           const includeByIndex: Record<number, boolean> = {};
           const quantityByIndex: Record<number, number> = {};
+          const manualProductByIndex: Record<number, number | null> = {};
           draft.itens.forEach((item, index) => {
             if (item.productId != null) {
               includeByIndex[index] = true;
               quantityByIndex[index] = Math.max(1, item.quantidade);
+              manualProductByIndex[index] = null;
             }
           });
-          next[key] = { reviewed: false, approved: false, reviewNote: "", includeByIndex, quantityByIndex };
+          next[key] = { reviewed: false, approved: false, reviewNote: "", includeByIndex, quantityByIndex, manualProductByIndex };
         }
         return next;
       });
@@ -486,6 +672,7 @@ export default function Sales() {
       reviewNote: "",
       includeByIndex,
       quantityByIndex,
+      manualProductByIndex: {},
     };
   }, []);
 
@@ -495,6 +682,26 @@ export default function Sales() {
       return draftReviewMap[key] ?? createDefaultDraftReviewState(draft);
     },
     [createDefaultDraftReviewState, draftReviewMap, getDraftKey]
+  );
+
+  const getDraftMappedProductId = useCallback(
+    (draft: ImportedDraft, index: number) => {
+      const review = getDraftReviewState(draft);
+      if (Object.prototype.hasOwnProperty.call(review.manualProductByIndex, index)) {
+        return review.manualProductByIndex[index] ?? null;
+      }
+      return draft.itens[index]?.productId ?? null;
+    },
+    [getDraftReviewState]
+  );
+
+  const getDraftMissingMappingsCount = useCallback(
+    (draft: ImportedDraft) =>
+      draft.itens.reduce((total, item, index) => {
+        if ((item.quantidade ?? 0) <= 0) return total;
+        return getDraftMappedProductId(draft, index) == null ? total + 1 : total;
+      }, 0),
+    [getDraftMappedProductId]
   );
 
   const updateDraftReviewState = useCallback(
@@ -513,14 +720,60 @@ export default function Sales() {
       const review = getDraftReviewState(draft);
       return draft.itens
         .map((item, index) => ({ item, index }))
-        .filter(({ item, index }) => item.productId != null && review.includeByIndex[index] !== false)
+        .filter(({ item, index }) => {
+          const manualMapped =
+            Object.prototype.hasOwnProperty.call(review.manualProductByIndex, index)
+              ? review.manualProductByIndex[index]
+              : undefined;
+          const mappedProductId = manualMapped !== undefined ? manualMapped : (item.productId ?? null);
+          return mappedProductId != null && review.includeByIndex[index] !== false;
+        })
         .map(({ item, index }) => ({
-          productId: item.productId as number,
+          productId: (
+            Object.prototype.hasOwnProperty.call(review.manualProductByIndex, index)
+              ? review.manualProductByIndex[index]
+              : item.productId
+          ) as number,
           quantidade: Math.max(1, review.quantityByIndex[index] ?? item.quantidade ?? 1),
         }));
     },
     [getDraftReviewState]
   );
+
+  const applyDraftHeaderData = useCallback((draft: ImportedDraft) => {
+    const resolvedClient = draft.cliente || importClientName.trim() || "";
+    if (resolvedClient) setNomeCliente(resolvedClient);
+    if (draft.telefoneCliente) setTelefoneCliente(draft.telefoneCliente);
+    if (draft.endereco) setEnderecoCliente(draft.endereco);
+    if (draft.dataVenda) setDataVenda(draft.dataVenda.slice(0, 10));
+
+    const sellerFromDraft = draft.vendedor ? resolveKnownSeller(draft.vendedor, sellers) : null;
+    if (sellerFromDraft) setVendedor(sellerFromDraft);
+
+    const extractedPaymentKeys = (draft.formasPagamentoExtraidas ?? [])
+      .map((entry) => resolveKnownPaymentMethod(entry.descricao, paymentMethods))
+      .filter((entry): entry is string => Boolean(entry));
+    const candidatePayment =
+      extractedPaymentKeys.length > 1
+        ? "MULTIPLO"
+        : extractedPaymentKeys[0] ?? resolveKnownPaymentMethod(draft.formaPagamento ?? "", paymentMethods);
+    if (candidatePayment) {
+      setFormaPagamento(candidatePayment);
+    }
+
+    if (draft.total != null) {
+      setValorTotalInput(draft.total.toFixed(2));
+    }
+
+    const summary = [
+      `Origem PDF: ${draft.fileName}`,
+      draft.documentNumber ? `Documento: ${draft.documentNumber}` : null,
+    ]
+      .filter(Boolean)
+      .join(" | ");
+    setObservacoes((prev) => (prev ? `${prev} | ${summary}` : summary));
+    toast.success(`Dados do PDF "${draft.fileName}" aplicados no formulário.`);
+  }, [importClientName, paymentMethods, sellers]);
 
   const addImportedItemsToCart = useCallback(async (draft: ImportedDraft) => {
     const review = getDraftReviewState(draft);
@@ -528,11 +781,17 @@ export default function Sales() {
       toast.warning("Aprovação obrigatória: revise e aprove o arquivo antes de adicionar ao carrinho.");
       return;
     }
+    const missingMappingsCount = getDraftMissingMappingsCount(draft);
+    if (missingMappingsCount > 0) {
+      toast.warning(`Vincule ${missingMappingsCount} item(ns) do PDF a produtos existentes antes de seguir.`);
+      return;
+    }
 
     const approvedItems = getApprovedRecognizedItems(draft);
     const importableItems = approvedItems.filter((item) => item.productId && item.quantidade > 0);
     if (importableItems.length === 0) {
-      toast.warning("Nenhum item reconhecido para importar neste PDF.");
+      applyDraftHeaderData(draft);
+      toast.warning("Nenhum item reconhecido para carrinho. Dados principais do PDF foram aplicados no formulário.");
       return;
     }
 
@@ -587,8 +846,44 @@ export default function Sales() {
       return next;
     });
 
-    if (!nomeCliente && draft.cliente) {
-      setNomeCliente(draft.cliente);
+    if (!nomeCliente) {
+      const resolvedClient = draft.cliente || importClientName.trim() || "";
+      if (resolvedClient) {
+        setNomeCliente(resolvedClient);
+      }
+    }
+    if (!telefoneCliente && draft.telefoneCliente) {
+      setTelefoneCliente(draft.telefoneCliente);
+    }
+    if (!enderecoCliente && draft.endereco) {
+      setEnderecoCliente(draft.endereco);
+    }
+    if (!formaPagamento) {
+      if ((draft.formasPagamentoExtraidas?.length ?? 0) > 1) {
+        setFormaPagamento("MULTIPLO");
+      } else if (draft.formasPagamentoExtraidas?.length === 1) {
+        const known = resolveKnownPaymentMethod(draft.formasPagamentoExtraidas[0].descricao, paymentMethods);
+        if (known) {
+          setFormaPagamento(known);
+        }
+      } else if (draft.formaPagamento) {
+        const known = resolveKnownPaymentMethod(draft.formaPagamento, paymentMethods);
+        if (known) {
+          setFormaPagamento(known);
+        }
+      }
+    }
+    if (!dataVenda && draft.dataVenda) {
+      setDataVenda(draft.dataVenda.slice(0, 10));
+    }
+    if (!vendedor && draft.vendedor) {
+      const knownFromDraft = resolveKnownSeller(draft.vendedor, sellers);
+      if (knownFromDraft) {
+        setVendedor(knownFromDraft);
+      }
+    }
+    if (!valorTotalInput && draft.total != null) {
+      setValorTotalInput(draft.total.toFixed(2));
     }
     if (draft.endereco || draft.total != null) {
       const summary = [
@@ -603,17 +898,47 @@ export default function Sales() {
     }
 
     toast.success(`Itens do arquivo "${draft.fileName}" adicionados ao carrinho.`);
-  }, [getApprovedRecognizedItems, getDraftReviewState, nomeCliente, utils.products.getById]);
+  }, [
+    applyDraftHeaderData,
+    dataVenda,
+    enderecoCliente,
+    formaPagamento,
+    getApprovedRecognizedItems,
+    getDraftMissingMappingsCount,
+    getDraftReviewState,
+    importClientName,
+    nomeCliente,
+    telefoneCliente,
+    utils.products.getById,
+    valorTotalInput,
+    vendedor,
+  ]);
 
   const registerImportedDraftNow = useCallback(async (draft: ImportedDraft) => {
-    if (!vendedor) {
+    const sellerFromDraftOrForm = draft.vendedor ?? vendedor;
+    if (!sellerFromDraftOrForm) {
       toast.error("Selecione um vendedor antes de lançar a venda importada.");
+      return;
+    }
+    const resolvedSeller = resolveKnownSeller(sellerFromDraftOrForm, sellers);
+    if (!resolvedSeller) {
+      const suggestion = suggestKnownSeller(sellerFromDraftOrForm, sellers);
+      toast.error(
+        suggestion
+          ? `Vendedor "${sellerFromDraftOrForm}" não cadastrado. Sugestão: "${suggestion}".`
+          : `Vendedor "${sellerFromDraftOrForm}" não cadastrado.`
+      );
       return;
     }
 
     const review = getDraftReviewState(draft);
     if (!review.approved) {
       toast.warning("Aprovação obrigatória: revise e aprove o arquivo antes de lançar.");
+      return;
+    }
+    const missingMappingsCount = getDraftMissingMappingsCount(draft);
+    if (missingMappingsCount > 0) {
+      toast.warning(`Vincule ${missingMappingsCount} item(ns) do PDF a produtos existentes antes de lançar.`);
       return;
     }
 
@@ -623,14 +948,49 @@ export default function Sales() {
       return;
     }
 
+    const resolvedClient = draft.cliente ?? (importClientName.trim() || undefined);
+    if (!resolvedClient) {
+      toast.error("Informe o nome do cliente antes de lançar a venda importada.");
+      return;
+    }
+    const extractedPaymentKeys = (draft.formasPagamentoExtraidas ?? [])
+      .map((entry) => resolveKnownPaymentMethod(entry.descricao, paymentMethods))
+      .filter((entry): entry is string => Boolean(entry));
+    const hasUnknownExtractedPayment = (draft.formasPagamentoExtraidas ?? []).some(
+      (entry) => !resolveKnownPaymentMethod(entry.descricao, paymentMethods)
+    );
+
+    const candidatePayment =
+      extractedPaymentKeys.length > 1
+        ? "MULTIPLO"
+        : extractedPaymentKeys[0] ?? resolveKnownPaymentMethod(draft.formaPagamento ?? "", paymentMethods) ?? formaPagamento;
+
+    const resolvedPaymentKey = resolveKnownPaymentMethod(candidatePayment, paymentMethods);
+    if (!resolvedPaymentKey) {
+      toast.error("Informe a forma de pagamento antes de lançar a venda importada.");
+      return;
+    }
+    if (hasUnknownExtractedPayment) {
+      toast.warning(
+        "PDF com forma(s) de pagamento fora do catálogo. Revise e confirme a forma principal antes de lançar."
+      );
+    }
+
     const origem = `Importado de PDF: ${draft.fileName}`;
     const baseObs = draft.endereco ? `Endereço: ${draft.endereco}` : undefined;
     const obs = [origem, baseObs].filter(Boolean).join(" | ");
 
     await registrarImportadaMutation.mutateAsync({
       items,
-      vendedor,
-      nomeCliente: draft.cliente ?? undefined,
+      vendedor: resolvedSeller,
+      nomeCliente: resolvedClient,
+      telefoneCliente: draft.telefoneCliente ?? (telefoneCliente.trim() || undefined),
+      enderecoCliente: draft.endereco ?? (enderecoCliente.trim() || undefined),
+      formaPagamento: getPaymentLabelByKey(resolvedPaymentKey, paymentMethods),
+      dataVenda: draft.dataVenda ? new Date(draft.dataVenda) : (dataVenda ? new Date(`${dataVenda}T12:00:00`) : undefined),
+      valorTotal:
+        draft.total ??
+        parseCurrencyInput(valorTotalInput),
       observacoes: obs || undefined,
       tipoTransacao,
       importMeta: {
@@ -644,7 +1004,22 @@ export default function Sales() {
 
     setProcessedImports((prev) => ({ ...prev, [getDraftKey(draft)]: true }));
     utils.vendas.importHistory.invalidate();
-  }, [getApprovedRecognizedItems, getDraftKey, getDraftReviewState, registrarImportadaMutation, tipoTransacao, utils.vendas.importHistory, vendedor]);
+  }, [
+    dataVenda,
+    enderecoCliente,
+    formaPagamento,
+    getApprovedRecognizedItems,
+    getDraftKey,
+    getDraftMissingMappingsCount,
+    getDraftReviewState,
+    importClientName,
+    registrarImportadaMutation,
+    telefoneCliente,
+    tipoTransacao,
+    utils.vendas.importHistory,
+    valorTotalInput,
+    vendedor,
+  ]);
 
   const markDraftReviewed = useCallback((draft: ImportedDraft) => {
     updateDraftReviewState(draft, (current) => ({ ...current, reviewed: true }));
@@ -657,9 +1032,18 @@ export default function Sales() {
         toast.warning("Marque como revisado antes de aprovar.");
         return current;
       }
+      const missingMappingsCount = getDraftMissingMappingsCount(draft);
+      if (!current.approved && missingMappingsCount > 0) {
+        toast.warning(`Vincule ${missingMappingsCount} item(ns) a produtos existentes antes de aprovar.`);
+        return current;
+      }
+      if (!current.approved && getApprovedRecognizedItems(draft).length === 0) {
+        toast.warning("Selecione ao menos um item vinculado para aprovar o arquivo.");
+        return current;
+      }
       return { ...current, approved: !current.approved };
     });
-  }, [updateDraftReviewState]);
+  }, [getApprovedRecognizedItems, getDraftMissingMappingsCount, updateDraftReviewState]);
 
   const toggleDraftItemIncluded = useCallback((draft: ImportedDraft, index: number, include: boolean) => {
     updateDraftReviewState(draft, (current) => ({
@@ -673,6 +1057,15 @@ export default function Sales() {
     updateDraftReviewState(draft, (current) => ({
       ...current,
       quantityByIndex: { ...current.quantityByIndex, [index]: Math.max(1, quantidadeNova) },
+      approved: false,
+    }));
+  }, [updateDraftReviewState]);
+
+  const updateDraftManualProduct = useCallback((draft: ImportedDraft, index: number, productId: number | null) => {
+    updateDraftReviewState(draft, (current) => ({
+      ...current,
+      manualProductByIndex: { ...current.manualProductByIndex, [index]: productId },
+      includeByIndex: { ...current.includeByIndex, [index]: productId != null },
       approved: false,
     }));
   }, [updateDraftReviewState]);
@@ -708,9 +1101,14 @@ export default function Sales() {
     }
 
     let approvedCount = 0;
+    let skippedCount = 0;
     importedDrafts.forEach((draft) => {
       updateDraftReviewState(draft, (current) => {
         if (!current.reviewed) return current;
+        if (getDraftMissingMappingsCount(draft) > 0 || getApprovedRecognizedItems(draft).length === 0) {
+          skippedCount += 1;
+          return current;
+        }
         approvedCount += 1;
         return {
           ...current,
@@ -721,11 +1119,14 @@ export default function Sales() {
     });
 
     if (approvedCount === 0) {
-      toast.warning("Nenhum arquivo revisado para aprovar.");
+      toast.warning("Nenhum arquivo revisado e totalmente vinculado para aprovar.");
       return;
     }
     toast.success(`${approvedCount} arquivo(s) aprovados em lote.`);
-  }, [batchReviewNote, importedDrafts, updateDraftReviewState]);
+    if (skippedCount > 0) {
+      toast.warning(`${skippedCount} arquivo(s) ficaram pendentes por falta de vínculo de produto.`);
+    }
+  }, [batchReviewNote, getApprovedRecognizedItems, getDraftMissingMappingsCount, importedDrafts, updateDraftReviewState]);
 
   const addAllImportedToCart = useCallback(async () => {
     let successCount = 0;
@@ -742,7 +1143,8 @@ export default function Sales() {
   }, [addImportedItemsToCart, getApprovedRecognizedItems, getDraftKey, importedDrafts, processedImports]);
 
   const registerAllImportedNow = useCallback(async () => {
-    if (!vendedor) {
+    const hasSellerInBatch = importedDrafts.some((draft) => Boolean(draft.vendedor));
+    if (!vendedor && !hasSellerInBatch) {
       toast.error("Selecione um vendedor antes do lançamento em lote.");
       return;
     }
@@ -799,6 +1201,14 @@ export default function Sales() {
     toast.info("Carrinho de venda limpo.");
   }, []);
 
+  const clearImportedBatch = useCallback(() => {
+    setImportedDrafts([]);
+    setProcessedImports({});
+    setDraftReviewMap({});
+    setBatchReviewNote("");
+    toast.info("Lote de importação limpo.");
+  }, []);
+
   const handleSubmit = () => {
     if (saleItems.length === 0) {
       toast.error("Adicione pelo menos um produto à venda");
@@ -809,25 +1219,93 @@ export default function Sales() {
       toast.error("Selecione o vendedor");
       return;
     }
+    const resolvedSeller = resolveKnownSeller(vendedor, sellers);
+    if (!resolvedSeller) {
+      const suggestion = suggestKnownSeller(vendedor, sellers);
+      toast.error(
+        suggestion
+          ? `Vendedor "${vendedor}" não cadastrado. Sugestão: "${suggestion}".`
+          : `Vendedor "${vendedor}" não cadastrado.`
+      );
+      return;
+    }
+    if (!nomeCliente.trim()) {
+      toast.error("Informe o nome do cliente para confirmar a venda.");
+      return;
+    }
+    if (!formaPagamento.trim()) {
+      toast.error("Informe a forma de pagamento para confirmar a venda.");
+      return;
+    }
+    const resolvedPaymentKey = resolveKnownPaymentMethod(formaPagamento, paymentMethods);
+    if (!resolvedPaymentKey) {
+      toast.error("Forma de pagamento inválida. Selecione uma opção cadastrada.");
+      return;
+    }
+    if (!dataVenda) {
+      toast.error("Informe a data da venda para confirmar.");
+      return;
+    }
 
     registrarVendaMutation.mutate({
       items: saleItems.map(item => ({
         productId: item.productId,
         quantidade: item.quantidade,
       })),
-      vendedor,
+      vendedor: resolvedSeller,
       nomeCliente: nomeCliente || undefined,
+      telefoneCliente: telefoneCliente || undefined,
+      enderecoCliente: enderecoCliente || undefined,
+      formaPagamento: getPaymentLabelByKey(resolvedPaymentKey, paymentMethods),
+      dataVenda: dataVenda ? new Date(`${dataVenda}T12:00:00`) : undefined,
+      valorTotal: parseCurrencyInput(valorTotalInput),
       observacoes: observacoes || undefined,
       tipoTransacao,
     });
     setVendedor("");
     setNomeCliente("");
+    setTelefoneCliente("");
+    setEnderecoCliente("");
+    setFormaPagamento("");
+    setDataVenda("");
+    setValorTotalInput("");
     setObservacoes("");
   };
 
   const totalItems = saleItems.length;
   const totalUnits = saleItems.reduce((acc, item) => acc + item.quantidade, 0);
+  const importedCount = importedDrafts.length;
+  const reviewedImportedCount = importedDrafts.filter((draft) => getDraftReviewState(draft).reviewed).length;
+  const approvedImportedCount = importedDrafts.filter((draft) => getDraftReviewState(draft).approved).length;
+  const draftsWithRecognizedItemsCount = importedDrafts.filter((draft) =>
+    draft.itens.some((item) => item.productId != null)
+  ).length;
+  const draftsReadyToLaunchCount = importedDrafts.filter((draft) => {
+    const review = getDraftReviewState(draft);
+    const hasSelectedItems = getApprovedRecognizedItems(draft).length > 0;
+    const missingMappingsCount = getDraftMissingMappingsCount(draft);
+    return review.approved && hasSelectedItems && missingMappingsCount === 0 && !processedImports[getDraftKey(draft)];
+  }).length;
+  const filteredImportedDrafts = importedDrafts.filter((draft) => {
+    if (importQualityFilter === "all") return true;
+    if (importQualityFilter === "pending") {
+      const review = getDraftReviewState(draft);
+      const hasSelectedItems = getApprovedRecognizedItems(draft).length > 0;
+      const missingMappingsCount = getDraftMissingMappingsCount(draft);
+      return !review.reviewed || !review.approved || !hasSelectedItems || missingMappingsCount > 0 || draft.warnings.length > 0;
+    }
+    const quality = resolveDraftQuality(draft).label;
+    if (importQualityFilter === "high") return quality === "Alta";
+    if (importQualityFilter === "medium") return quality === "Média";
+    return quality === "Baixa";
+  });
+  const processedImportedCount = importedDrafts.filter((draft) => processedImports[getDraftKey(draft)]).length;
+  const pendingImportedCount = Math.max(0, importedCount - processedImportedCount);
+  const hasCatalogEmptyWarning = importedDrafts.some((draft) =>
+    draft.warnings.some((warning) => warning.toLowerCase().includes("catálogo de produtos vazio"))
+  );
   const lowStockItems = saleItems.filter((item) => item.quantidade > item.estoque);
+  const mappingProducts = productsForMappingQuery.data?.items ?? [];
   const latencyLevel =
     lastQueryMs == null
       ? "ok"
@@ -840,9 +1318,23 @@ export default function Sales() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-foreground">Registrar Vendas</h1>
-        <p className="text-muted-foreground mt-2">Registre as vendas do dia e atualize o estoque automaticamente</p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Registrar Vendas</h1>
+          <p className="text-muted-foreground mt-2">Registre as vendas do dia e atualize o estoque automaticamente</p>
+        </div>
+        <Button
+          type="button"
+          variant={pendingImportedCount > 0 ? "default" : "outline"}
+          className="w-full sm:w-auto gap-2"
+          onClick={() => setIsImportPanelOpen(true)}
+        >
+          <UploadCloud className="h-4 w-4" />
+          Importar PDF
+          {pendingImportedCount > 0 ? (
+            <Badge variant="secondary" className="ml-1">{pendingImportedCount}</Badge>
+          ) : null}
+        </Button>
       </div>
 
       {productsError && (
@@ -913,14 +1405,87 @@ export default function Sales() {
         </Card>
       ) : null}
 
-      <Card className="border-border shadow-sm">
-        <CardHeader>
-          <CardTitle>Importar Vendas por PDF</CardTitle>
-          <CardDescription>
-            Leia automaticamente PDFs da pasta e adicione itens reconhecidos ao carrinho de venda.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
+      <Dialog open={isImportPanelOpen} onOpenChange={setIsImportPanelOpen}>
+        <DialogContent className="w-[min(96vw,1100px)] max-w-none max-h-[90vh] overflow-hidden p-0">
+          <div className="max-h-[90vh] overflow-y-auto p-4 sm:p-6">
+          <DialogHeader>
+            <DialogTitle>Importar Vendas por PDF</DialogTitle>
+            <DialogDescription>
+              Leia automaticamente PDFs da pasta e adicione itens reconhecidos ao carrinho de venda.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 pb-28">
+          {hasCatalogEmptyWarning ? (
+            <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900">
+              Não há produtos cadastrados no banco atual para vinculação automática. A importação de cabeçalho (cliente, vendedor, pagamento, data, telefone e endereço) continua funcionando.
+            </div>
+          ) : null}
+          <div className="grid grid-cols-2 gap-2 rounded-md border bg-muted/20 p-3 text-xs sm:grid-cols-4">
+            <div className="rounded border bg-background px-2 py-1">
+              <div className="text-muted-foreground">Etapa 1 • Upload</div>
+              <div className="font-semibold">{importedCount > 0 ? `${importedCount} arquivo(s)` : "Aguardando"}</div>
+            </div>
+            <div className="rounded border bg-background px-2 py-1">
+              <div className="text-muted-foreground">Etapa 2 • Revisão</div>
+              <div className="font-semibold">{reviewedImportedCount}/{importedCount || 0}</div>
+            </div>
+            <div className="rounded border bg-background px-2 py-1">
+              <div className="text-muted-foreground">Etapa 3 • Aprovação</div>
+              <div className="font-semibold">{approvedImportedCount}/{importedCount || 0}</div>
+            </div>
+            <div className="rounded border bg-background px-2 py-1">
+              <div className="text-muted-foreground">Etapa 4 • Pronto p/ lançar</div>
+              <div className="font-semibold">{draftsReadyToLaunchCount}</div>
+            </div>
+          </div>
+          <div className="rounded-md border bg-muted/20 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs text-muted-foreground">
+                Lote atual: <strong>{importedCount}</strong> arquivo(s) • pendentes: <strong>{pendingImportedCount}</strong> • lançados: <strong>{processedImportedCount}</strong>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    if (!importClientName.trim()) {
+                      toast.warning("Informe um nome no cliente padrão para aplicar.");
+                      return;
+                    }
+                    setNomeCliente(importClientName.trim());
+                    toast.success("Cliente padrão aplicado ao formulário de venda.");
+                  }}
+                >
+                  Aplicar cliente padrão
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={clearImportedBatch}
+                  disabled={importedCount === 0}
+                >
+                  Limpar lote
+                </Button>
+              </div>
+            </div>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="importClientName">Nome do Cliente (padrão da importação)</Label>
+              <Input
+                id="importClientName"
+                type="text"
+                placeholder="Ex: Maria da Silva"
+                value={importClientName}
+                onChange={(event) => setImportClientName(event.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Usado quando o PDF não identificar o cliente.
+              </p>
+            </div>
+          </div>
           <Tabs defaultValue="folder" className="w-full">
             <TabsList className="grid w-full grid-cols-2">
               <TabsTrigger value="folder">Automática por Pasta</TabsTrigger>
@@ -936,6 +1501,7 @@ export default function Sales() {
                 <Button
                   type="button"
                   variant="outline"
+                  className="w-full md:w-auto"
                   disabled={importFromFolderMutation.isPending}
                   onClick={() => {
                     importFromFolderMutation.mutate({
@@ -978,6 +1544,7 @@ export default function Sales() {
                 <Button
                   type="button"
                   variant="outline"
+                  className="w-full sm:w-auto"
                   onClick={() => manualFileInputRef.current?.click()}
                   disabled={importFromUploadedFilesMutation.isPending}
                 >
@@ -1003,25 +1570,38 @@ export default function Sales() {
             <div className="space-y-2 rounded-md border p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm font-medium">Arquivos processados: {importedDrafts.length}</p>
-                <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Select value={importQualityFilter} onValueChange={(value: "all" | "high" | "medium" | "low" | "pending") => setImportQualityFilter(value)}>
+                    <SelectTrigger className="h-8 w-full sm:w-[210px] text-xs">
+                      <SelectValue placeholder="Filtrar qualidade" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Qualidade: todas</SelectItem>
+                      <SelectItem value="pending">Pendências de revisão</SelectItem>
+                      <SelectItem value="high">Qualidade: alta</SelectItem>
+                      <SelectItem value="medium">Qualidade: média</SelectItem>
+                      <SelectItem value="low">Qualidade: baixa</SelectItem>
+                    </SelectContent>
+                  </Select>
                   <Input
                     value={batchReviewNote}
                     onChange={(event) => setBatchReviewNote(event.target.value)}
                     placeholder="Observação padrão da revisão (lote)"
-                    className="h-8 w-64 text-xs"
+                    className="h-8 w-full sm:w-64 md:w-72 text-xs"
                   />
-                  <Button type="button" size="sm" variant="outline" onClick={markAllDraftsReviewed}>
+                  <Button type="button" size="sm" className="w-full sm:w-auto" variant="outline" onClick={markAllDraftsReviewed}>
                     Revisar todos
                   </Button>
-                  <Button type="button" size="sm" variant="outline" onClick={approveAllReviewedDrafts}>
+                  <Button type="button" size="sm" className="w-full sm:w-auto" variant="outline" onClick={approveAllReviewedDrafts}>
                     Aprovar revisados
                   </Button>
-                  <Button type="button" size="sm" variant="outline" onClick={() => void addAllImportedToCart()}>
+                  <Button type="button" size="sm" className="w-full sm:w-auto" variant="outline" onClick={() => void addAllImportedToCart()}>
                     Adicionar todos ao carrinho
                   </Button>
                   <Button
                     type="button"
                     size="sm"
+                    className="w-full sm:w-auto"
                     onClick={() => void registerAllImportedNow()}
                     disabled={registrarImportadaMutation.isPending}
                   >
@@ -1030,20 +1610,63 @@ export default function Sales() {
                 </div>
               </div>
               <div className="max-h-72 space-y-2 overflow-auto">
-                {importedDrafts.map((draft) => {
+                {filteredImportedDrafts.map((draft) => {
                   const recognizedItems = draft.itens
                     .map((item, index) => ({ item, index }))
-                    .filter(({ item }) => item.productId != null);
+                    .filter(({ item, index }) => getDraftMappedProductId(draft, index) != null);
+                  const unresolvedItems = draft.itens
+                    .map((item, index) => ({ item, index }))
+                    .filter(({ item, index }) => item.quantidade > 0 && getDraftMappedProductId(draft, index) == null);
                   const review = getDraftReviewState(draft);
                   const selectedItems = getApprovedRecognizedItems(draft);
+                  const missingMappingsCount = getDraftMissingMappingsCount(draft);
                   const done = processedImports[getDraftKey(draft)];
+                  const quality = resolveDraftQuality(draft);
+                  const parsedSeller = draft.vendedor ?? "";
+                  const knownSeller = parsedSeller ? resolveKnownSeller(parsedSeller, sellers) : null;
+                  const sellerSuggestion = parsedSeller && !knownSeller ? suggestKnownSeller(parsedSeller, sellers) : null;
                   return (
                     <div key={getDraftKey(draft)} className="rounded-md border bg-muted/20 p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
-                          <p className="text-sm font-semibold">{draft.fileName}</p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-semibold">{draft.fileName}</p>
+                            <Badge variant="outline" className={quality.className}>
+                              Qualidade: {quality.label}
+                            </Badge>
+                          </div>
                           <p className="text-xs text-muted-foreground">
-                            Cliente: {draft.cliente ?? "não identificado"} | Itens reconhecidos: {recognizedItems.length}/{draft.itens.length} | Selecionados: {selectedItems.length}
+                            Cliente: {draft.cliente ?? (importClientName.trim() || "não identificado")} | Itens vinculados: {recognizedItems.length}/{draft.itens.length} | Selecionados: {selectedItems.length}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            Telefone: {draft.telefoneCliente ?? "n/a"} | Vendedor: {draft.vendedor ?? "n/a"} | Pagamento: {draft.formaPagamento ?? "n/a"}
+                          </p>
+                          {(draft.formasPagamentoExtraidas?.length ?? 0) > 0 ? (
+                            <div className="mt-1 space-y-1">
+                              {draft.formasPagamentoExtraidas.map((entry, idx) => {
+                                const known = resolveKnownPaymentMethod(entry.descricao, paymentMethods);
+                                return (
+                                  <p
+                                    key={`${getDraftKey(draft)}-pay-${idx}`}
+                                    className={`text-[11px] ${known ? "text-muted-foreground" : "text-amber-700 font-medium"}`}
+                                  >
+                                    Pagamento {idx + 1}: {entry.descricao} [{PAYMENT_CATEGORY_LABELS[entry.categoria]}]
+                                    {entry.valor != null ? ` - R$ ${entry.valor.toFixed(2)}` : ""}
+                                    {entry.vencimento ? ` - venc. ${new Date(entry.vencimento).toLocaleDateString("pt-BR")}` : ""}
+                                    {!known ? " - fora do catálogo" : ""}
+                                  </p>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                          {parsedSeller && !knownSeller ? (
+                            <p className="text-xs font-medium text-amber-700">
+                              Vendedor do PDF não cadastrado: "{parsedSeller}"
+                              {sellerSuggestion ? ` (sugestão: ${sellerSuggestion})` : ""}.
+                            </p>
+                          ) : null}
+                          <p className="text-xs text-muted-foreground">
+                            Data: {draft.dataVenda ? new Date(draft.dataVenda).toLocaleDateString("pt-BR") : "n/a"} | Endereço: {draft.endereco ?? "n/a"}
                           </p>
                           {draft.documentNumber ? (
                             <p className="text-xs text-muted-foreground">Documento: {draft.documentNumber}</p>
@@ -1051,6 +1674,15 @@ export default function Sales() {
                           <p className="text-xs text-muted-foreground">
                             Revisado: {review.reviewed ? "sim" : "não"} | Aprovado: {review.approved ? "sim" : "não"}
                           </p>
+                          {missingMappingsCount > 0 ? (
+                            <p className="text-xs font-medium text-amber-700">
+                              Pendência: faltam {missingMappingsCount} vínculo(s) com produto para permitir a baixa no estoque.
+                            </p>
+                          ) : (
+                            <p className="text-xs font-medium text-emerald-700">
+                              Todos os itens do PDF já estão vinculados a produtos existentes.
+                            </p>
+                          )}
                           <Input
                             value={review.reviewNote}
                             onChange={(event) => updateDraftReviewNote(draft, event.target.value)}
@@ -1061,10 +1693,11 @@ export default function Sales() {
                             <p className="text-xs text-emerald-700 font-medium">Arquivo já lançado</p>
                           ) : null}
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <Button
                             type="button"
                             size="sm"
+                            className="w-full sm:w-auto"
                             variant="outline"
                             onClick={() => markDraftReviewed(draft)}
                           >
@@ -1073,6 +1706,7 @@ export default function Sales() {
                           <Button
                             type="button"
                             size="sm"
+                            className="w-full sm:w-auto"
                             variant={review.approved ? "secondary" : "default"}
                             onClick={() => toggleDraftApproved(draft)}
                           >
@@ -1081,6 +1715,16 @@ export default function Sales() {
                           <Button
                             type="button"
                             size="sm"
+                            className="w-full sm:w-auto"
+                            variant="outline"
+                            onClick={() => applyDraftHeaderData(draft)}
+                          >
+                            Aplicar dados
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="w-full sm:w-auto"
                             variant="outline"
                             onClick={() => void addImportedItemsToCart(draft)}
                             disabled={selectedItems.length === 0}
@@ -1090,6 +1734,7 @@ export default function Sales() {
                           <Button
                             type="button"
                             size="sm"
+                            className="w-full sm:w-auto"
                             onClick={() => void registerImportedDraftNow(draft)}
                             disabled={!review.approved || selectedItems.length === 0 || done || registrarImportadaMutation.isPending}
                           >
@@ -1097,20 +1742,42 @@ export default function Sales() {
                           </Button>
                         </div>
                       </div>
-                      {recognizedItems.length > 0 ? (
+                      {draft.itens.length > 0 ? (
                         <div className="mt-2 max-h-40 space-y-2 overflow-auto rounded border bg-background/60 p-2">
-                          {recognizedItems.map(({ item, index }) => {
+                          {draft.itens.map((item, index) => {
                             const included = review.includeByIndex[index] !== false;
                             const qty = review.quantityByIndex[index] ?? item.quantidade;
+                            const mappedProductId = getDraftMappedProductId(draft, index);
                             return (
-                              <div key={`${getDraftKey(draft)}-${index}`} className="flex items-center gap-2 text-xs">
+                              <div key={`${getDraftKey(draft)}-${index}`} className="grid gap-2 rounded border bg-background/80 p-2 text-xs sm:grid-cols-[auto,minmax(0,1fr),minmax(220px,280px),72px] sm:items-center">
                                 <Checkbox
                                   checked={included}
                                   onCheckedChange={(checked) => toggleDraftItemIncluded(draft, index, Boolean(checked))}
                                 />
-                                <span className="min-w-0 flex-1 truncate">
-                                  {item.productName} {item.medida ? `(${item.medida})` : ""}
-                                </span>
+                                <div className="min-w-0">
+                                  <p className="truncate font-medium">
+                                    {item.productName} {item.medida ? `(${item.medida})` : ""}
+                                  </p>
+                                  <p className="truncate text-[11px] text-muted-foreground">{item.sourceLine}</p>
+                                </div>
+                                <Select
+                                  value={mappedProductId ? String(mappedProductId) : "__none"}
+                                  onValueChange={(value) =>
+                                    updateDraftManualProduct(draft, index, value === "__none" ? null : Number(value))
+                                  }
+                                >
+                                  <SelectTrigger className="h-8 text-xs">
+                                    <SelectValue placeholder="Vincular produto do estoque" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="__none">Sem vínculo</SelectItem>
+                                    {mappingProducts.map((product) => (
+                                      <SelectItem key={`${getDraftKey(draft)}-linked-map-${index}-${product.id}`} value={String(product.id)}>
+                                        {product.name} ({product.medida})
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
                                 <Input
                                   type="number"
                                   min={1}
@@ -1126,6 +1793,57 @@ export default function Sales() {
                           })}
                         </div>
                       ) : null}
+                      {unresolvedItems.length > 0 ? (
+                        <div className="mt-2 max-h-44 space-y-2 overflow-auto rounded border border-amber-300 bg-amber-50/60 p-2">
+                          <p className="text-xs font-medium text-amber-800">
+                            Itens pendentes de vínculo: selecione o produto correto para dar retirada no estoque
+                          </p>
+                          {unresolvedItems.map(({ item, index }) => {
+                            const manualProductId = review.manualProductByIndex[index] ?? null;
+                            const qty = review.quantityByIndex[index] ?? item.quantidade;
+                            return (
+                              <div key={`${getDraftKey(draft)}-unresolved-${index}`} className="space-y-1 rounded border bg-background/80 p-2">
+                                <p className="text-[11px] text-muted-foreground">{item.sourceLine}</p>
+                                <div className="grid gap-2 sm:grid-cols-[1fr_72px]">
+                                  <Select
+                                    value={manualProductId ? String(manualProductId) : "__none"}
+                                    onValueChange={(value) =>
+                                      updateDraftManualProduct(draft, index, value === "__none" ? null : Number(value))
+                                    }
+                                  >
+                                    <SelectTrigger className="h-8 text-xs">
+                                      <SelectValue placeholder="Selecione o produto para vincular" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="__none">Sem vínculo</SelectItem>
+                                      {mappingProducts.map((product) => (
+                                        <SelectItem key={`${getDraftKey(draft)}-map-${index}-${product.id}`} value={String(product.id)}>
+                                          {product.name} ({product.medida})
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                  <Input
+                                    type="number"
+                                    min={1}
+                                    value={qty}
+                                    className="h-8 text-center text-xs"
+                                    onChange={(event) => {
+                                      const parsed = Number.parseInt(event.target.value, 10);
+                                      updateDraftItemQuantity(draft, index, Number.isNaN(parsed) ? 1 : parsed);
+                                    }}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                          {mappingProducts.length === 0 ? (
+                            <p className="text-[11px] text-amber-800">
+                              Sem produtos disponíveis para vínculo manual neste ambiente.
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
                       {draft.total != null ? (
                         <p className="mt-1 text-xs text-muted-foreground">Total PDF: R$ {draft.total.toFixed(2)}</p>
                       ) : null}
@@ -1135,6 +1853,9 @@ export default function Sales() {
                     </div>
                   );
                 })}
+                {filteredImportedDrafts.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">Nenhum arquivo para o filtro selecionado.</p>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -1163,6 +1884,9 @@ export default function Sales() {
                     <p className="text-sm font-medium">{row.fileName}</p>
                     <p className="text-xs text-muted-foreground">
                       Cliente: {row.nomeCliente ?? "n/a"} | Documento: {row.documentNumber ?? "n/a"} | Itens: {row.itemsCount}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Telefone: {row.telefoneCliente ?? "n/a"} | Vendedor: {row.vendedor ?? "n/a"} | Pagamento: {row.formaPagamento ?? "n/a"}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       Total: {row.total != null ? `R$ ${Number(row.total).toFixed(2)}` : "n/a"} | Status: {row.status}
@@ -1209,8 +1933,37 @@ export default function Sales() {
               </div>
             )}
           </div>
-        </CardContent>
-      </Card>
+
+          <div className="sticky bottom-0 z-20 -mx-4 mt-2 border-t bg-background/95 px-4 py-3 shadow-[0_-8px_20px_rgba(0,0,0,0.08)] backdrop-blur sm:-mx-6 sm:px-6">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs text-muted-foreground">
+                Reconhecidos: <strong>{draftsWithRecognizedItemsCount}</strong> • Revisados: <strong>{reviewedImportedCount}</strong> • Aprovados: <strong>{approvedImportedCount}</strong> • Prontos: <strong>{draftsReadyToLaunchCount}</strong>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" size="sm" variant="outline" onClick={markAllDraftsReviewed}>
+                  Revisar todos
+                </Button>
+                <Button type="button" size="sm" variant="outline" onClick={approveAllReviewedDrafts}>
+                  Aprovar revisados
+                </Button>
+                <Button type="button" size="sm" variant="outline" onClick={() => void addAllImportedToCart()}>
+                  Carrinho (lote)
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void registerAllImportedNow()}
+                  disabled={registrarImportadaMutation.isPending || draftsReadyToLaunchCount === 0}
+                >
+                  {registrarImportadaMutation.isPending ? "Lançando..." : "Lançar lote"}
+                </Button>
+              </div>
+            </div>
+          </div>
+          </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card className="border-border shadow-sm">
@@ -1220,13 +1973,13 @@ export default function Sales() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="vendedor">Vendedor Responsável</Label>
+              <Label htmlFor="vendedor">Vendedor Responsável (Obrigatório)</Label>
               <Select value={vendedor} onValueChange={setVendedor}>
                 <SelectTrigger>
                   <SelectValue placeholder="Selecione o vendedor" />
                 </SelectTrigger>
                 <SelectContent>
-                  {VENDEDORES.map((v) => (
+                  {sellers.map((v) => (
                     <SelectItem key={v} value={v}>
                       {v}
                     </SelectItem>
@@ -1236,7 +1989,7 @@ export default function Sales() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="nomeCliente">Nome do Cliente (Opcional)</Label>
+              <Label htmlFor="nomeCliente">Nome do Cliente (Obrigatório)</Label>
               <Input
                 id="nomeCliente"
                 type="text"
@@ -1244,6 +1997,73 @@ export default function Sales() {
                 value={nomeCliente}
                 onChange={(e) => setNomeCliente(e.target.value)}
               />
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="telefoneCliente">Telefone</Label>
+                <Input
+                  id="telefoneCliente"
+                  type="text"
+                  placeholder="Ex: (82) 99999-9999"
+                  value={telefoneCliente}
+                  onChange={(e) => setTelefoneCliente(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="formaPagamento">Forma de Pagamento (Obrigatório)</Label>
+                <Select value={formaPagamento} onValueChange={setFormaPagamento}>
+                  <SelectTrigger id="formaPagamento">
+                    <SelectValue placeholder="Selecione a forma de pagamento" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {paymentMethods.map((method) => (
+                      <SelectItem key={method.key} value={method.key}>
+                        {method.label} - {method.category}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {paymentMethodsLoading
+                    ? "Carregando catálogo de pagamentos..."
+                    : "Catálogo obrigatório para manter consistência e relatórios por categoria."}
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="enderecoCliente">Endereço</Label>
+              <Input
+                id="enderecoCliente"
+                type="text"
+                placeholder="Ex: Rua A, 123 - Bairro"
+                value={enderecoCliente}
+                onChange={(e) => setEnderecoCliente(e.target.value)}
+              />
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label htmlFor="dataVenda">Data da Venda (Obrigatório)</Label>
+                <Input
+                  id="dataVenda"
+                  type="date"
+                  value={dataVenda}
+                  onChange={(e) => setDataVenda(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="valorTotalInput">Valor Total (R$)</Label>
+                <Input
+                  id="valorTotalInput"
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="Ex: 1299,90"
+                  value={valorTotalInput}
+                  onChange={(e) => setValorTotalInput(e.target.value)}
+                />
+              </div>
             </div>
 
             <div className="space-y-2">

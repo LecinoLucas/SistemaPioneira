@@ -1,6 +1,8 @@
 import { systemRouter } from "./_core/systemRouter";
 import { router } from "./_core/trpc";
+import { ENV } from "./_core/env";
 import { authRouter } from "./routers/authRouter";
+import { catalogoRouter } from "./routers/catalogoRouter";
 import { dashboardRouter } from "./routers/dashboardRouter";
 import { encomendasRouter } from "./routers/encomendasRouter";
 import { exportRouter } from "./routers/exportRouter";
@@ -16,7 +18,8 @@ export const appRouter = router({
   vendas: vendasRouter,
   dashboard: dashboardRouter,
   encomendas: encomendasRouter,
-  marcas: marcasRouter,
+  catalogo: catalogoRouter,
+  ...(ENV.legacyMarcasRouterEnabled ? { marcas: marcasRouter } : {}),
   movimentacoes: movimentacoesRouter,
   export: exportRouter,
 });

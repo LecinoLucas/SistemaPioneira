@@ -311,7 +311,7 @@ export default function AuditTrail() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold text-foreground">Auditoria</h1>
+        <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Auditoria</h1>
         <p className="text-muted-foreground mt-2">
           Consulte eventos críticos de autenticação e governança.
         </p>

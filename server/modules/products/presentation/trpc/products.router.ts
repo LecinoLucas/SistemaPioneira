@@ -26,6 +26,7 @@ const categorySchema = z.enum([
   "Bicamas",
   "Camas",
 ]);
+const productStatusSchema = z.enum(["ATIVO", "INATIVO", "ARQUIVADO"]);
 
 export const productsRouter = router({
   list: protectedProcedure
@@ -38,6 +39,7 @@ export const productsRouter = router({
           categoria: z.string().optional(),
           marca: z.string().optional(),
           onlyActiveForSales: z.boolean().optional(),
+          includeArchived: z.boolean().optional(),
           page: z.number().int().min(1).default(1),
           pageSize: z.number().int().min(1).max(100).default(25),
         })
@@ -62,6 +64,24 @@ export const productsRouter = router({
       throw toTrpcError(error);
     }
   }),
+
+  checkDuplicateIdentity: managerOrAdminProcedure
+    .use(withActionPermission("action:products.manage"))
+    .input(
+      z.object({
+        name: z.string().min(1),
+        medida: z.string().min(1),
+        marca: z.string().optional(),
+        excludeId: z.number().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      try {
+        return await productsService.checkDuplicateIdentity(input);
+      } catch (error) {
+        throw toTrpcError(error);
+      }
+    }),
 
   create: managerOrAdminProcedure
     .use(withActionPermission("action:products.manage"))
@@ -104,6 +124,11 @@ export const productsRouter = router({
         quantidade: z.number().int().min(0).optional(),
         estoqueMinimo: z.number().int().min(0).optional(),
         ativoParaVenda: z.boolean().optional(),
+        arquivado: z.boolean().optional(),
+        motivoInativacao: z.string().trim().max(500).nullable().optional(),
+        motivoArquivamento: z.string().trim().max(500).nullable().optional(),
+        statusProduto: productStatusSchema.optional(),
+        auditJustification: z.string().trim().max(500).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -182,10 +207,70 @@ export const productsRouter = router({
         id: z.number(),
         precoCusto: z.number().nullable(),
         precoVenda: z.number().nullable(),
+        auditJustification: z.string().trim().max(500).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
-      return await productsService.updatePrice(ctx.user.id, input);
+      return await productsService.updatePriceWithJustification({
+        actor: {
+          id: ctx.user.id,
+          email: ctx.user.email,
+          role: ctx.user.role,
+          openId: ctx.user.openId,
+          ip: ctx.req.ip,
+        },
+        ...input,
+      });
+    }),
+
+  archive: managerOrAdminProcedure
+    .use(withActionPermission("action:products.manage"))
+    .input(
+      z.object({
+        id: z.number(),
+        motivoArquivamento: z.string().trim().min(3).max(500),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      try {
+        return await productsService.archive(
+          {
+            id: ctx.user.id,
+            email: ctx.user.email,
+            role: ctx.user.role,
+            openId: ctx.user.openId,
+            ip: ctx.req.ip,
+          },
+          input
+        );
+      } catch (error) {
+        throw toTrpcError(error);
+      }
+    }),
+
+  unarchive: managerOrAdminProcedure
+    .use(withActionPermission("action:products.manage"))
+    .input(
+      z.object({
+        id: z.number(),
+        reativarParaVenda: z.boolean().optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      try {
+        return await productsService.unarchive(
+          {
+            id: ctx.user.id,
+            email: ctx.user.email,
+            role: ctx.user.role,
+            openId: ctx.user.openId,
+            ip: ctx.req.ip,
+          },
+          input
+        );
+      } catch (error) {
+        throw toTrpcError(error);
+      }
     }),
 
   priceHistory: adminProcedure

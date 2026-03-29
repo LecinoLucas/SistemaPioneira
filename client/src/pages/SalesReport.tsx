@@ -104,7 +104,7 @@ export default function SalesReport() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold text-foreground">Relatório de Vendas</h1>
+        <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Relatório de Vendas</h1>
         <p className="text-muted-foreground mt-2">Visualize e exporte relatórios detalhados de vendas</p>
       </div>
 
@@ -166,16 +166,16 @@ export default function SalesReport() {
             </div>
           </div>
 
-          <div className="flex gap-2">
-            <Button onClick={handleFilter} className="gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={handleFilter} className="gap-2 w-full sm:w-auto">
               <Filter className="h-4 w-4" />
               Aplicar Filtros
             </Button>
-            <Button onClick={handleExportPdf} variant="outline" className="gap-2" disabled={exportPdfMutation.isPending}>
+            <Button onClick={handleExportPdf} variant="outline" className="gap-2 w-full sm:w-auto" disabled={exportPdfMutation.isPending}>
               <FileDown className="h-4 w-4" />
               {exportPdfMutation.isPending ? "Gerando..." : "Exportar PDF"}
             </Button>
-            <Button onClick={handleExportExcel} variant="outline" className="gap-2" disabled={exportExcelMutation.isPending}>
+            <Button onClick={handleExportExcel} variant="outline" className="gap-2 w-full sm:w-auto" disabled={exportExcelMutation.isPending}>
               <FileSpreadsheet className="h-4 w-4" />
               {exportExcelMutation.isPending ? "Gerando..." : "Exportar Excel"}
             </Button>
@@ -196,7 +196,7 @@ export default function SalesReport() {
               <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
             </div>
           ) : vendas && vendas.length > 0 ? (
-            <div className="rounded-md border">
+            <div className="rounded-md border overflow-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -215,12 +215,16 @@ export default function SalesReport() {
                   {vendas.map((venda) => (
                     <TableRow key={venda.id}>
                       <TableCell>{new Date(venda.dataVenda).toLocaleDateString('pt-BR')}</TableCell>
-                      <TableCell className="font-medium">{venda.productName}</TableCell>
+                      <TableCell className="font-medium max-w-[16rem] truncate" title={venda.productName}>
+                        {venda.productName}
+                      </TableCell>
                       <TableCell>{venda.medida}</TableCell>
                       <TableCell>{venda.marca || "-"}</TableCell>
                       <TableCell>{venda.quantidade}</TableCell>
                       <TableCell>{venda.vendedor || "-"}</TableCell>
-                      <TableCell>{venda.nomeCliente || "-"}</TableCell>
+                      <TableCell className="max-w-[14rem] truncate" title={venda.nomeCliente || "-"}>
+                        {venda.nomeCliente || "-"}
+                      </TableCell>
                       <TableCell className="max-w-xs truncate">{venda.observacoes || "-"}</TableCell>
                       <TableCell>
                         <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${

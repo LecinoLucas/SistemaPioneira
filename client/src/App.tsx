@@ -17,6 +17,7 @@ import { Route, Switch, useLocation } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import DashboardLayout from "./components/DashboardLayout";
+import AppLoading from "./components/AppLoading";
 
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Products = lazy(() => import("./pages/Products"));
@@ -26,7 +27,7 @@ const PublicSales = lazy(() => import("./pages/PublicSales"));
 const Pricing = lazy(() => import("./pages/Pricing"));
 const PricesMargins = lazy(() => import("./pages/PricesMargins"));
 const Reports = lazy(() => import("./pages/Reports"));
-const Marcas = lazy(() => import("./pages/Marcas"));
+const CatalogoBase = lazy(() => import("./pages/CatalogoBase"));
 const Login = lazy(() => import("./pages/Login"));
 const PendingUsers = lazy(() => import("./pages/PendingUsers"));
 const AuditTrail = lazy(() => import("./pages/AuditTrail"));
@@ -45,7 +46,6 @@ const privateRoutes: PrivateRouteConfig[] = [
   { path: "/precos", Component: Pricing },
   { path: "/precos-margens", Component: PricesMargins },
   { path: "/relatorio-vendas", Component: Reports },
-  { path: "/marcas", Component: Marcas },
   { path: "/usuarios-pendentes", Component: PendingUsers },
   { path: "/auditoria", Component: AuditTrail },
   { path: "/componentes", Component: ComponentShowcase },
@@ -57,6 +57,16 @@ function LegacyReportsRedirect({ tab }: { tab: "encomendas" | "rankings" }) {
   useEffect(() => {
     setLocation(`/relatorio-vendas?tab=${tab}`);
   }, [setLocation, tab]);
+
+  return <div className="min-h-[30vh] grid place-items-center text-muted-foreground">Redirecionando…</div>;
+}
+
+function LegacyCatalogRedirect() {
+  const [, setLocation] = useLocation();
+
+  useEffect(() => {
+    setLocation("/categorias");
+  }, [setLocation]);
 
   return <div className="min-h-[30vh] grid place-items-center text-muted-foreground">Redirecionando…</div>;
 }
@@ -82,11 +92,11 @@ function RoleGuard({
   }, [loading, user, location, setLocation]);
 
   if (loading) {
-    return <div className="min-h-screen grid place-items-center text-muted-foreground">Carregando...</div>;
+    return <AppLoading message="Validando sessão..." />;
   }
 
   if (!user) {
-    return <div className="min-h-screen grid place-items-center text-muted-foreground">Redirecionando para login...</div>;
+    return <AppLoading message="Redirecionando para login..." />;
   }
 
   if (!canAccessPath(path)) {
@@ -136,7 +146,7 @@ function Router() {
   }, []);
 
   return (
-    <Suspense fallback={<div className="min-h-screen grid place-items-center text-muted-foreground">Carregando...</div>}>
+    <Suspense fallback={<AppLoading />}>
       <Switch>
         {/* Public route - no authentication required */}
         <Route path={"/vendedor"} component={PublicSales} />
@@ -151,6 +161,27 @@ function Router() {
             </RoleGuard>
           </Route>
         ))}
+        <Route path={"/categorias"}>
+          <RoleGuard path={"/marcas"}>
+            <DashboardLayout>
+              <CatalogoBase />
+            </DashboardLayout>
+          </RoleGuard>
+        </Route>
+        <Route path={"/catalogo"}>
+          <RoleGuard path={"/marcas"}>
+            <DashboardLayout>
+              <LegacyCatalogRedirect />
+            </DashboardLayout>
+          </RoleGuard>
+        </Route>
+        <Route path={"/marcas"}>
+          <RoleGuard path={"/marcas"}>
+            <DashboardLayout>
+              <LegacyCatalogRedirect />
+            </DashboardLayout>
+          </RoleGuard>
+        </Route>
         <Route path={"/relatorio-encomendas"}>
           <RoleGuard path={"/relatorio-encomendas"}>
             <DashboardLayout>

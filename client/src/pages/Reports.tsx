@@ -1,8 +1,11 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useEffect, useMemo, useState } from "react";
-import SalesReport from "./SalesReport";
-import Encomendas from "./Encomendas";
-import Rankings from "./Rankings";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { useLocation } from "wouter";
+import AppLoading from "@/components/AppLoading";
+
+const SalesReport = lazy(() => import("./SalesReport"));
+const Encomendas = lazy(() => import("./Encomendas"));
+const Rankings = lazy(() => import("./Rankings"));
 
 type ReportTab = "vendas" | "encomendas" | "rankings";
 
@@ -18,15 +21,13 @@ function getTabFromSearch(search: string): ReportTab {
 }
 
 export default function Reports() {
+  const [location, setLocation] = useLocation();
   const [activeTab, setActiveTab] = useState<ReportTab>(() => getTabFromSearch(window.location.search));
 
   useEffect(() => {
-    const onPopState = () => {
-      setActiveTab(getTabFromSearch(window.location.search));
-    };
-    window.addEventListener("popstate", onPopState);
-    return () => window.removeEventListener("popstate", onPopState);
-  }, []);
+    const queryString = location.includes("?") ? location.slice(location.indexOf("?")) : "";
+    setActiveTab(getTabFromSearch(queryString));
+  }, [location]);
 
   const title = useMemo(() => {
     if (activeTab === "encomendas") return "Relatórios • Encomendas";
@@ -35,15 +36,13 @@ export default function Reports() {
   }, [activeTab]);
 
   const updateUrl = (tab: ReportTab) => {
-    const url = new URL(window.location.href);
-    url.searchParams.set("tab", tab);
-    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}`);
+    setLocation(`/relatorio-vendas?tab=${tab}`, { replace: true });
   };
 
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-3xl font-bold text-foreground">Relatórios</h1>
+        <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Relatórios</h1>
         <p className="text-muted-foreground mt-2">{title}</p>
       </div>
 
@@ -62,16 +61,21 @@ export default function Reports() {
         </TabsList>
 
         <TabsContent value="vendas" className="mt-4">
-          <SalesReport />
+          <Suspense fallback={<AppLoading message="Carregando relatório de vendas..." />}>
+            <SalesReport />
+          </Suspense>
         </TabsContent>
         <TabsContent value="encomendas" className="mt-4">
-          <Encomendas />
+          <Suspense fallback={<AppLoading message="Carregando relatório de encomendas..." />}>
+            <Encomendas />
+          </Suspense>
         </TabsContent>
         <TabsContent value="rankings" className="mt-4">
-          <Rankings />
+          <Suspense fallback={<AppLoading message="Carregando rankings..." />}>
+            <Rankings />
+          </Suspense>
         </TabsContent>
       </Tabs>
     </div>
   );
 }
-

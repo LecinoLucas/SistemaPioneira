@@ -123,13 +123,80 @@ async function showStatus() {
   const backendUrl = processes?.backend?.url || `http://localhost:${backendPort}`;
   const frontendUrl = processes?.frontend?.url || `http://localhost:${frontendPort}`;
 
-  const [backendListening, frontendListening] = await Promise.all([
-    isPortListening(backendPort),
-    isPortListening(frontendPort),
+  const resolveActiveService = async (
+    preferredPort,
+    knownPorts,
+    probeFn,
+    fallbackUrlFactory
+  ) => {
+    const [preferredIsActive, preferredPortListening] = await Promise.all([
+      probeFn(preferredPort),
+      isPortListening(preferredPort),
+    ]);
+    const preferredCurlActive = isUrlReachableByCurl(fallbackUrlFactory(preferredPort));
+    if (preferredIsActive || preferredPortListening || preferredCurlActive) {
+      return {
+        running: true,
+        port: preferredPort,
+        source: preferredIsActive
+          ? "preferred"
+          : preferredCurlActive
+            ? "curl-fallback"
+            : "port-only",
+      };
+    }
+
+    for (const port of knownPorts) {
+      if (port === preferredPort) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const [active, listening] = await Promise.all([probeFn(port), isPortListening(port)]);
+      const curlActive = isUrlReachableByCurl(fallbackUrlFactory(port));
+      if (active || listening || curlActive) {
+        return {
+          running: true,
+          port,
+          source: active ? "fallback" : curlActive ? "curl-fallback" : "port-only",
+        };
+      }
+    }
+
+    return {
+      running: false,
+      port: preferredPort,
+      source: "none",
+    };
+  };
+
+  const [backendState, frontendState] = await Promise.all([
+    resolveActiveService(
+      backendPort,
+      KNOWN_BACKEND_PORTS,
+      isCompatibleBackend,
+      (port) => `http://127.0.0.1:${port}/api/health`
+    ),
+    resolveActiveService(
+      frontendPort,
+      KNOWN_FRONTEND_PORTS,
+      isLikelyViteFrontend,
+      (port) => `http://127.0.0.1:${port}/`
+    ),
   ]);
 
-  console.log(`backend: ${backendListening ? "running" : "stopped"} (${backendUrl})`);
-  console.log(`frontend: ${frontendListening ? "running" : "stopped"} (${frontendUrl})`);
+  const backendStatus = backendState.running ? "running" : "stopped";
+  const frontendStatus = frontendState.running ? "running" : "stopped";
+  const backendResolvedUrl = `http://localhost:${backendState.port}`;
+  const frontendResolvedUrl = `http://localhost:${frontendState.port}`;
+  const formatHint = (source) => {
+    if (source === "fallback") return " [detectado em porta alternativa]";
+    if (source === "curl-fallback") return " [detectado por fallback HTTP]";
+    if (source === "port-only") return " [porta ativa, serviço não identificado]";
+    return "";
+  };
+  const backendHint = formatHint(backendState.source);
+  const frontendHint = formatHint(frontendState.source);
+
+  console.log(`backend: ${backendStatus} (${backendResolvedUrl})${backendHint}`);
+  console.log(`frontend: ${frontendStatus} (${frontendResolvedUrl})${frontendHint}`);
   console.log(
     `managed-pids: backend=${processes?.backend?.pid ?? "none"} frontend=${processes?.frontend?.pid ?? "none"}`
   );
@@ -200,6 +267,14 @@ function isPortListeningOnHost(port, host) {
     socket.once("timeout", () => finish(false));
     socket.once("error", () => finish(false));
   });
+}
+
+function isUrlReachableByCurl(url) {
+  const result = spawnSync("curl", ["-fsS", "--max-time", "1", url], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return result.status === 0;
 }
 
 async function isPortListening(port) {

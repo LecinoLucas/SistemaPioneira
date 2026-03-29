@@ -75,7 +75,7 @@ export default function PricesMargins() {
   return (
     <div className="container mx-auto py-8 space-y-6">
       <div>
-        <h1 className="text-3xl font-bold">Preços e Margens</h1>
+        <h1 className="text-2xl sm:text-3xl font-bold">Preços e Margens</h1>
         <p className="text-muted-foreground">
           Gerencie os preços de custo e venda dos produtos
         </p>
@@ -149,6 +149,7 @@ export default function PricesMargins() {
           {isLoading ? (
             <p>Carregando...</p>
           ) : (
+            <div className="overflow-auto rounded-md border">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -200,6 +201,7 @@ export default function PricesMargins() {
                 })}
               </TableBody>
             </Table>
+            </div>
           )}
         </CardContent>
       </Card>

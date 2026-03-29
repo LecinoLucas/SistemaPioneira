@@ -3,7 +3,7 @@ import { roleCanPerformAction, type ActionPermissionKey } from "@shared/access-g
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
-import { listUserPermissionsByUserId } from "../db";
+import { listUserPermissionsByUserId, resetConnection, isConnectionError } from "../db";
 import {
   checkRateLimit,
   getRateLimitSnapshot,
@@ -33,6 +33,13 @@ const errorGuardMiddleware = t.middleware(async opts => {
       ? { userId: ctx.user.id, email: ctx.user.email, role: ctx.user.role }
       : { userId: null };
     console.error(`[tRPC] ${type} ${path} failed`, { actor, ip: ctx.req.ip, error });
+
+    // If the error is a DB connection issue, reset the cached connection so
+    // the next request triggers a fresh reconnect instead of reusing a dead pool.
+    if (isConnectionError(error)) {
+      resetConnection(error instanceof Error ? error.message : "connection error in tRPC");
+    }
+
     throw error;
   }
 });
@@ -89,12 +96,16 @@ export function withActionPermission(permissionKey: ActionPermissionKey) {
       throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
     }
 
+    const userPermissions = await listUserPermissionsByUserId(ctx.user.id);
+    const explicit = userPermissions.find(p => p.permissionKey === permissionKey);
+    if (explicit?.allowed === true) {
+      return next();
+    }
+
     if (!roleCanPerformAction(ctx.user.role, permissionKey)) {
       throw new TRPCError({ code: "FORBIDDEN", message: "Ação não permitida para este perfil." });
     }
 
-    const userPermissions = await listUserPermissionsByUserId(ctx.user.id);
-    const explicit = userPermissions.find(p => p.permissionKey === permissionKey);
     if (explicit?.allowed === false) {
       throw new TRPCError({
         code: "FORBIDDEN",

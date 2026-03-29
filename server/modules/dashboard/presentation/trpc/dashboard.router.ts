@@ -72,4 +72,14 @@ export const dashboardRouter = router({
       throw toTrpcError(error);
     }
   }),
+
+  v2Health: managerOrAdminProcedure
+    .use(withRateLimit({ scope: "dashboard.v2_health", max: 120, windowMs: 60 * 1000 }))
+    .query(async () => {
+      try {
+        return await dashboardService.v2Health();
+      } catch (error) {
+        throw toTrpcError(error);
+      }
+    }),
 });

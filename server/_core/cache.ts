@@ -61,12 +61,12 @@ class AppCache {
    */
   invalidatePrefix(prefix: string): number {
     let count = 0;
-    for (const key of this.store.keys()) {
+    this.store.forEach((_entry, key) => {
       if (key.startsWith(prefix)) {
         this.store.delete(key);
         count++;
       }
-    }
+    });
     return count;
   }
 
@@ -87,11 +87,11 @@ class AppCache {
   /** Removes all expired entries from the store. */
   cleanup(): void {
     const now = Date.now();
-    for (const [key, entry] of this.store.entries()) {
+    this.store.forEach((entry, key) => {
       if (entry.expiresAt <= now) {
         this.store.delete(key);
       }
-    }
+    });
   }
 
   /** Flush all entries (use on logout / critical writes if needed). */
@@ -104,10 +104,10 @@ class AppCache {
     const now = Date.now();
     let active = 0;
     let expired = 0;
-    for (const entry of this.store.values()) {
+    this.store.forEach(entry => {
       if (entry.expiresAt > now) active++;
       else expired++;
-    }
+    });
     return {
       total: this.store.size,
       active,

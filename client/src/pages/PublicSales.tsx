@@ -19,6 +19,20 @@ interface CartItem {
   quantidadeDisponivel: number;
 }
 
+type PaymentMethodOption = { key: string; label: string; category: string };
+
+const DEFAULT_PAYMENT_METHODS: PaymentMethodOption[] = [
+  { key: "PIX", label: "PIX", category: "Instantâneo" },
+  { key: "RECEBER_NA_ENTREGA", label: "RECEBER NA ENTREGA", category: "Entrega" },
+  { key: "DINHEIRO", label: "DINHEIRO", category: "Dinheiro" },
+  { key: "CARTAO_CREDITO", label: "CARTÃO DE CRÉDITO", category: "Cartão" },
+  { key: "CARTAO_DEBITO", label: "CARTÃO DE DÉBITO", category: "Cartão" },
+  { key: "BOLETO", label: "BOLETO", category: "Boleto" },
+  { key: "TRANSFERENCIA", label: "TRANSFERÊNCIA", category: "Transferência" },
+  { key: "MULTIPLO", label: "MÚLTIPLO (2+ formas)", category: "Combinado" },
+  { key: "OUTROS", label: "OUTROS", category: "Outros" },
+];
+
 export default function PublicSales() {
   const [searchTerm, setSearchTerm] = useState("");
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
@@ -26,7 +40,23 @@ export default function PublicSales() {
   const [selectedCategoria, setSelectedCategoria] = useState<string>("all");
   const [cart, setCart] = useState<CartItem[]>([]);
   const [tipoTransacao, setTipoTransacao] = useState<"venda" | "troca" | "brinde" | "emprestimo" | "permuta">("venda");
+  const [formaPagamento, setFormaPagamento] = useState("");
   const [visibleCount, setVisibleCount] = useState(20);
+
+  const paymentMethodsQuery = trpc.catalogo.listPaymentMethods.useQuery(undefined, {
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const paymentMethods = useMemo<PaymentMethodOption[]>(() => {
+    const fromCatalog = (paymentMethodsQuery.data ?? [])
+      .filter((item) => item.codigo?.trim() && item.nome?.trim())
+      .map((item) => ({
+        key: item.codigo.trim().toUpperCase(),
+        label: item.nome.trim(),
+        category: item.categoria?.trim() || "Outros",
+      }));
+    return fromCatalog.length > 0 ? fromCatalog : DEFAULT_PAYMENT_METHODS;
+  }, [paymentMethodsQuery.data]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearchTerm(searchTerm), 300);
@@ -131,12 +161,17 @@ export default function PublicSales() {
       toast.error("Carrinho vazio");
       return;
     }
+    if (!formaPagamento) {
+      toast.error("Selecione a forma de pagamento");
+      return;
+    }
 
     registerSaleMutation.mutate({
       items: cart.map(item => ({
         productId: item.productId,
         quantidade: item.quantidade,
       })),
+      formaPagamento,
       tipoTransacao,
     });
   };
@@ -385,6 +420,21 @@ export default function PublicSales() {
                         ))}
                       </div>
                       <div className="space-y-2">
+                        <Label htmlFor="formaPagamento">Forma de Pagamento</Label>
+                        <Select value={formaPagamento} onValueChange={setFormaPagamento}>
+                          <SelectTrigger id="formaPagamento">
+                            <SelectValue placeholder="Selecione a forma de pagamento" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {paymentMethods.map((item) => (
+                              <SelectItem key={item.key} value={item.key}>
+                                {item.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
                         <Label htmlFor="tipoTransacao">Tipo de Transação</Label>
                         <Select value={tipoTransacao} onValueChange={(value: any) => setTipoTransacao(value)}>
                           <SelectTrigger id="tipoTransacao">
@@ -401,7 +451,7 @@ export default function PublicSales() {
                       </div>
                       <Button
                         onClick={handleFinalizeSale}
-                        disabled={registerSaleMutation.isPending}
+                        disabled={registerSaleMutation.isPending || !formaPagamento}
                         className="w-full gap-2"
                         size="lg"
                       >

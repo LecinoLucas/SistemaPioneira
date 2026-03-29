@@ -108,7 +108,7 @@ export default function Pricing() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold text-foreground">Preços e Margens</h1>
+        <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Preços e Margens</h1>
         <p className="text-muted-foreground mt-2">Gerencie preços de custo, venda e margens de lucro</p>
         <div className="mt-2 p-3 rounded-lg bg-orange-50 dark:bg-orange-950/20 border border-orange-200 dark:border-orange-800">
           <p className="text-sm text-orange-800 dark:text-orange-200 flex items-center gap-2">
@@ -127,6 +127,7 @@ export default function Pricing() {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          <div className="overflow-auto rounded-md border">
           <Table>
             <TableHeader>
               <TableRow>
@@ -192,15 +193,16 @@ export default function Pricing() {
               )}
             </TableBody>
           </Table>
+          </div>
           {products && totalPages > 1 ? (
-            <div className="mt-4 flex items-center justify-between">
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <p className="text-sm text-muted-foreground">
                 Mostrando {((currentPage - 1) * PAGE_SIZE) + 1}
                 -
                 {Math.min(currentPage * PAGE_SIZE, totalProducts)}
                 {" "}de {totalProducts} produtos
               </p>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
                   size="sm"

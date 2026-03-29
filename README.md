@@ -39,6 +39,19 @@ Para manter o projeto simples no dia a dia, o workspace usa filtros no VS Code p
 Detalhes da arquitetura em camadas:
 - [Arquitetura em Camadas e Módulos](/Users/lecinolucas/Desktop/projetos/estoque-manager/docs/ARCHITECTURE.md)
 
+## Padrao de UI (Obrigatorio)
+
+Antes de finalizar qualquer tela nova (ou refatoracao visual), siga o guia:
+- [UI Guidelines](/Users/lecinolucas/Desktop/projetos/estoque-manager/docs/ui-guidelines.md)
+
+Checklist rapido:
+- Titulo principal responsivo (`text-2xl sm:text-3xl`).
+- Botoes de acao com quebra no mobile (`w-full sm:w-auto` quando aplicavel).
+- Tabelas dentro de container com `overflow-auto`.
+- Filtros em grid responsivo (mobile first).
+- Foco visivel e alvo de toque adequado.
+- Validacao final: `npx tsc --noEmit`.
+
 ## Pré-requisitos
 
 - Node.js 18+
@@ -150,9 +163,15 @@ No painel de auditoria (admin), existe mitigação operacional para limpar bucke
 ## Testes e qualidade
 
 ```bash
-pnpm run check
 pnpm run test
+pnpm run test:db
+pnpm run test:sales:smoke
+pnpm run test:sales:import:smoke
 ```
+
+Smokes de vendas (recomendado antes de publicar):
+- `test:sales:smoke`: valida fluxo de venda manual (regras de catálogo + edição).
+- `test:sales:import:smoke`: valida fluxo de venda importada (registro, histórico e proteção contra duplicidade).
 
 ## Autenticação e Governança
 
@@ -167,7 +186,27 @@ pnpm run test
 
 - `user`: `/`, `/vendas`, `/historico`
 - `gerente`: `user` + `/produtos`, `/precos`, `/relatorio-vendas`, `/relatorio-encomendas`, `/rankings`
-- `admin`: acesso total + governança (`/precos-margens`, `/marcas`, `/usuarios-pendentes`, `/auditoria`, `/componentes`)
+- `admin`: acesso total + governança (`/precos-margens`, `/catalogo`, `/usuarios-pendentes`, `/auditoria`, `/componentes`)
+
+### Migracao de `marcas` para `catalogo`
+
+- Rota frontend principal: `/catalogo`
+- Rota antiga `/marcas` continua com redirecionamento para compatibilidade
+- Namespace tRPC novo: `catalogo.*`
+- Namespace legado `marcas.*` pode ser desligado via `.env`
+
+Checklist para desligar o legado com seguranca:
+
+```bash
+# 1) Validar se nao existe uso legado no codigo
+npm run catalogo:legacy:check
+
+# 2) Desligar compatibilidade no .env
+# LEGACY_MARCAS_ROUTER_ENABLED=false
+
+# 3) Subir ambiente novamente
+npm run dev:full
+```
 
 Procedimentos formais:
 - [Governança e Procedimentos](/Users/lecinolucas/Desktop/projetos/estoque-manager/docs/GOVERNANCA_E_PROCEDIMENTOS.md)

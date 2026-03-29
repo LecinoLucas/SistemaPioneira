@@ -43,6 +43,8 @@ describeDb("vendas.registrar - negative stock", () => {
       categoria: "Colchões",
       marca: "Test Brand",
       estoqueMinimo: 1,
+      ativoParaVenda: true,
+      arquivado: false,
     });
 
     // Attempt to sell the product with zero stock
@@ -54,6 +56,7 @@ describeDb("vendas.registrar - negative stock", () => {
         },
       ],
       vendedor: "Cleonice",
+      formaPagamento: "PIX",
       observacoes: "Encomenda - Cliente João",
     });
 
@@ -76,6 +79,8 @@ describeDb("vendas.registrar - negative stock", () => {
       categoria: "Colchões",
       marca: "Test Brand",
       estoqueMinimo: 1,
+      ativoParaVenda: true,
+      arquivado: false,
     });
 
     // Attempt to sell more than available
@@ -87,6 +92,7 @@ describeDb("vendas.registrar - negative stock", () => {
         },
       ],
       vendedor: "Luciano",
+      formaPagamento: "PIX",
       observacoes: "Encomenda parcial",
     });
 
@@ -111,6 +117,8 @@ describeDb("vendas.editar - negative stock", () => {
       categoria: "Colchões",
       marca: "Test Brand",
       estoqueMinimo: 1,
+      ativoParaVenda: true,
+      arquivado: false,
     });
 
     // Register a sale
@@ -122,6 +130,7 @@ describeDb("vendas.editar - negative stock", () => {
         },
       ],
       vendedor: "Vanuza",
+      formaPagamento: "PIX",
       observacoes: "Venda inicial",
     });
 
@@ -156,6 +165,8 @@ describeDb("vendas.editar - negative stock", () => {
       categoria: "Colchões",
       marca: "Test Brand",
       estoqueMinimo: 1,
+      ativoParaVenda: true,
+      arquivado: false,
     });
 
     // Register a sale
@@ -167,6 +178,7 @@ describeDb("vendas.editar - negative stock", () => {
         },
       ],
       vendedor: "Cleonice",
+      formaPagamento: "PIX",
       observacoes: "Observação inicial",
     });
 
@@ -204,6 +216,8 @@ describeDb("dashboard.negativeStock", () => {
       categoria: "Colchões",
       marca: "Test Brand",
       estoqueMinimo: 1,
+      ativoParaVenda: true,
+      arquivado: false,
     });
 
     await caller.vendas.registrar({
@@ -214,6 +228,7 @@ describeDb("dashboard.negativeStock", () => {
         },
       ],
       vendedor: "Cleonice",
+      formaPagamento: "PIX",
       observacoes: "Encomenda urgente",
     });
 
@@ -224,5 +239,104 @@ describeDb("dashboard.negativeStock", () => {
     const foundProduct = negativeStockProducts.find(p => p.id === product.id);
     expect(foundProduct).toBeDefined();
     expect(foundProduct?.quantidade).toBe(-3);
+  });
+});
+
+describeDb("vendas.catalog-governance", () => {
+  it("should reject sale with empty items list", async () => {
+    const ctx = createAdminContext();
+    const caller = appRouter.createCaller(ctx);
+
+    await expect(
+      caller.vendas.registrar({
+        items: [],
+        vendedor: "Cleonice",
+        formaPagamento: "PIX",
+        observacoes: "Sem itens",
+        tipoTransacao: "venda",
+      })
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("ao menos um item"),
+    });
+  });
+
+  it("should reject sale without payment method", async () => {
+    const ctx = createAdminContext();
+    const caller = appRouter.createCaller(ctx);
+
+    const product = await db.createProduct({
+      name: "Test Product Payment Required",
+      medida: "Casal",
+      quantidade: 1,
+      categoria: "Colchões",
+      marca: "Test Brand",
+      estoqueMinimo: 1,
+      ativoParaVenda: true,
+      arquivado: false,
+    });
+
+    await expect(
+      caller.vendas.registrar({
+        items: [{ productId: product.id, quantidade: 1 }],
+        vendedor: "Cleonice",
+        observacoes: "Sem forma de pagamento",
+      })
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("forma de pagamento"),
+    });
+  });
+
+  it("should reject sale with unknown payment method", async () => {
+    const ctx = createAdminContext();
+    const caller = appRouter.createCaller(ctx);
+
+    const product = await db.createProduct({
+      name: "Test Product Unknown Payment",
+      medida: "Queen",
+      quantidade: 1,
+      categoria: "Colchões",
+      marca: "Test Brand",
+      estoqueMinimo: 1,
+      ativoParaVenda: true,
+      arquivado: false,
+    });
+
+    await expect(
+      caller.vendas.registrar({
+        items: [{ productId: product.id, quantidade: 1 }],
+        vendedor: "Cleonice",
+        formaPagamento: "PAGAMENTO_INVALIDO",
+        observacoes: "Forma inválida",
+      })
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("não está cadastrada no catálogo"),
+    });
+  });
+
+  it("should reject sale with unknown seller", async () => {
+    const ctx = createAdminContext();
+    const caller = appRouter.createCaller(ctx);
+
+    const product = await db.createProduct({
+      name: "Test Product Unknown Seller",
+      medida: "King",
+      quantidade: 1,
+      categoria: "Colchões",
+      marca: "Test Brand",
+      estoqueMinimo: 1,
+      ativoParaVenda: true,
+      arquivado: false,
+    });
+
+    await expect(
+      caller.vendas.registrar({
+        items: [{ productId: product.id, quantidade: 1 }],
+        vendedor: "VENDEDOR_FANTASMA",
+        formaPagamento: "PIX",
+        observacoes: "Vendedor inválido",
+      })
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("não está cadastrado no catálogo"),
+    });
   });
 });

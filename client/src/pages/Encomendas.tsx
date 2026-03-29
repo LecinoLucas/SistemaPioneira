@@ -263,14 +263,14 @@ export default function Encomendas() {
   };
   
   return (
-    <div className="p-6">
-      <div className="flex justify-between items-center mb-6">
+    <div className="p-4 sm:p-6">
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center">
         <div>
-          <h1 className="text-3xl font-bold text-foreground">Relatório de Encomendas</h1>
+          <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Relatório de Encomendas</h1>
           <p className="text-muted-foreground mt-1">Gerencie produtos sob encomenda</p>
         </div>
-        <div className="flex gap-2">
-          <Button onClick={() => {
+        <div className="flex flex-wrap gap-2">
+          <Button className="w-full sm:w-auto" onClick={() => {
             const defaultDate = addBusinessDays(new Date(), 15);
             setDataEntrega(defaultDate.toISOString().split('T')[0]);
             setShowModal(true);
@@ -279,6 +279,7 @@ export default function Encomendas() {
             Nova Encomenda
           </Button>
           <Button 
+            className="w-full sm:w-auto"
             variant="outline" 
             onClick={handleExportPdf}
             disabled={exportPdfMutation.isPending}
@@ -294,8 +295,8 @@ export default function Encomendas() {
           <CardTitle className="text-lg">Filtros</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex gap-4">
-            <div className="flex-1">
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
               <Label>Filtrar por Status</Label>
               <Select value={statusFilter} onValueChange={setStatusFilter}>
                 <SelectTrigger>
@@ -311,7 +312,7 @@ export default function Encomendas() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex-1">
+            <div className="space-y-2">
               <Label>Filtrar por Cliente</Label>
               <Input 
                 value={clienteFilter} 

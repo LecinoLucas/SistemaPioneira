@@ -40,9 +40,9 @@ const buckets = new Map<string, Bucket>();
 
 /** Remove all expired entries — called before every check to keep memory lean. */
 function pruneExpired(now: number): void {
-  for (const [key, bucket] of buckets.entries()) {
+  buckets.forEach((bucket, key) => {
     if (bucket.resetAt <= now) buckets.delete(key);
-  }
+  });
 }
 
 function resolveIdentity(ctx: TrpcContext, by: RateLimitBy): string {
@@ -121,19 +121,19 @@ export function getRateLimitSnapshot(options?: {
   const prefix = options?.scopePrefix?.trim();
 
   const items: RateLimitSnapshotItem[] = [];
-  for (const [key, bucket] of buckets.entries()) {
+  buckets.forEach((bucket, key) => {
     const sep = key.indexOf(":");
-    if (sep <= 0) continue;
+    if (sep <= 0) return;
     const scope = key.slice(0, sep);
     const identity = key.slice(sep + 1);
-    if (prefix && !scope.startsWith(prefix)) continue;
+    if (prefix && !scope.startsWith(prefix)) return;
     items.push({
       scope,
       identity,
       count: bucket.count,
       resetInSeconds: Math.max(0, Math.ceil((bucket.resetAt - now) / 1000)),
     });
-  }
+  });
 
   return items
     .sort((a, b) => b.count - a.count || a.resetInSeconds - b.resetInSeconds)
@@ -152,17 +152,19 @@ export function clearRateLimitBuckets(options?: {
   const term = options?.identityContains?.trim().toLowerCase();
   const max = Math.max(1, Math.min(options?.maxDelete ?? 500, 5000));
 
-  let deleted = 0;
-  for (const key of buckets.keys()) {
-    if (deleted >= max) break;
+  // Collect matching keys first (up to max) so we can stop early without
+  // iterating the entire map after the cap is reached.
+  const toDelete: string[] = [];
+  buckets.forEach((_bucket, key) => {
+    if (toDelete.length >= max) return;
     const sep = key.indexOf(":");
-    if (sep <= 0) continue;
+    if (sep <= 0) return;
     const scope = key.slice(0, sep);
     const identity = key.slice(sep + 1);
-    if (prefix && !scope.startsWith(prefix)) continue;
-    if (term && !identity.toLowerCase().includes(term)) continue;
-    buckets.delete(key);
-    deleted++;
-  }
-  return deleted;
+    if (prefix && !scope.startsWith(prefix)) return;
+    if (term && !identity.toLowerCase().includes(term)) return;
+    toDelete.push(key);
+  });
+  for (const key of toDelete) buckets.delete(key);
+  return toDelete.length;
 }

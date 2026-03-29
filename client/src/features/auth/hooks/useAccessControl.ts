@@ -38,6 +38,7 @@ export function useAccessControl() {
   const canAccessPath = (path: ScreenPath) => {
     const roleAllowed = roleCanAccessPath(user?.role, path);
     const explicit = permissionMap.get(screenPermissionKey(path));
+    if (explicit === true) return true;
     if (explicit === false) return false;
     return roleAllowed;
   };
@@ -45,6 +46,7 @@ export function useAccessControl() {
   const canPerform = (permissionKey: ActionPermissionKey) => {
     const roleAllowed = roleCanPerformAction(user?.role, permissionKey);
     const explicit = permissionMap.get(permissionKey);
+    if (explicit === true) return true;
     if (explicit === false) return false;
     return roleAllowed;
   };

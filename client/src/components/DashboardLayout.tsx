@@ -1,8 +1,10 @@
 import { SCREEN_CATALOG, type ScreenPath } from "@shared/access-governance";
 import { useAuth } from "@/features/auth/hooks/useAuth";
 import { useAccessControl } from "@/features/auth/hooks/useAccessControl";
+import { trpc } from "@/lib/trpc";
 import { BrandLogo } from "@/components/BrandLogo";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -150,6 +152,12 @@ function DashboardLayoutContent({
   const menuItems = useMemo(() => getMenuItems(canAccessPath), [canAccessPath]);
   const activeMenuItem = useMemo(() => menuItems.find(item => item.path === location), [menuItems, location]);
   const isMobile = useIsMobile();
+  const canReadV2Health = user.role === "admin" || user.role === "gerente";
+  const { data: v2Health } = trpc.dashboard.v2Health.useQuery(undefined, {
+    enabled: canReadV2Health,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+  });
 
   useEffect(() => {
     if (isCollapsed) {
@@ -217,12 +225,16 @@ function DashboardLayoutContent({
           <SidebarContent className="gap-0">
             <SidebarMenu className="px-2 py-1">
               {menuItems.map(item => {
-                const isActive = location === item.path;
+                const isCatalogBase = item.path === "/marcas";
+                const destinationPath = isCatalogBase ? "/categorias" : item.path;
+                const isActive = isCatalogBase
+                  ? location === "/marcas" || location === "/catalogo" || location === "/categorias"
+                  : location === item.path;
                 return (
                   <SidebarMenuItem key={item.path}>
                     <SidebarMenuButton
                       isActive={isActive}
-                      onClick={() => setLocation(item.path)}
+                      onClick={() => setLocation(destinationPath)}
                       tooltip={item.label}
                       className={`h-10 transition-all font-normal`}
                     >
@@ -269,7 +281,7 @@ function DashboardLayoutContent({
                   className="cursor-pointer text-destructive focus:text-destructive"
                 >
                   <LogOut className="mr-2 h-4 w-4" />
-                  <span>Sign out</span>
+                  <span>Sair</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -286,6 +298,33 @@ function DashboardLayoutContent({
       </div>
 
       <SidebarInset>
+        {!isMobile && (
+          <div className="sticky top-0 z-30 border-b bg-background/90 backdrop-blur supports-[backdrop-filter]:bg-background/70">
+            <div className="flex h-14 items-center justify-between px-4">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-foreground truncate">
+                  {activeMenuItem?.label ?? "Painel"}
+                </p>
+                <p className="text-xs text-muted-foreground truncate">
+                  Gestão diária da operação de estoque
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary" className="capitalize">
+                  {user.role}
+                </Badge>
+                {canReadV2Health && v2Health?.readMode && (
+                  <Badge variant={v2Health.readMode === "v2" ? "default" : "outline"}>
+                    V2: {v2Health.readMode}
+                  </Badge>
+                )}
+                <Badge variant="outline" className="hidden md:inline-flex">
+                  Atalho / para buscar
+                </Badge>
+              </div>
+            </div>
+          </div>
+        )}
         {isMobile && (
           <div className="flex border-b h-14 items-center justify-between bg-background/95 px-2 backdrop-blur supports-[backdrop-filter]:backdrop-blur sticky top-0 z-40">
             <div className="flex items-center gap-2">

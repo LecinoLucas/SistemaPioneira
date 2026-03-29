@@ -38,8 +38,8 @@ export const SCREEN_CATALOG: readonly ScreenMeta[] = [
   { path: "/relatorio-encomendas", label: "Relatório de Encomendas", group: "Relatórios" },
   { path: "/rankings", label: "Rankings", group: "Relatórios" },
   { path: "/precos-margens", label: "Preços e Margens", group: "Administração" },
-  { path: "/marcas", label: "Marcas", group: "Administração" },
-  { path: "/usuarios-pendentes", label: "Usuários Pendentes", group: "Administração" },
+  { path: "/marcas", label: "Categorias", group: "Administração" },
+  { path: "/usuarios-pendentes", label: "Usuários", group: "Administração" },
   { path: "/auditoria", label: "Auditoria", group: "Administração" },
   { path: "/componentes", label: "Componentes", group: "Administração" },
 ] as const;

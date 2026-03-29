@@ -67,13 +67,19 @@ export const vendasRouter = router({
     .use(withRateLimit({ scope: "vendas.register_public", by: "ip", max: 30, windowMs: 60 * 1000 }))
     .input(
       z.object({
-        items: z.array(
-          z.object({
-            productId: z.number(),
-            quantidade: z.number().int().min(1),
-          })
-        ),
+        items: z
+          .array(
+            z.object({
+              productId: z.number(),
+              quantidade: z.number().int().min(1),
+            })
+          )
+          .min(1, "Adicione ao menos um item na venda."),
         nomeCliente: z.string().optional(),
+        telefoneCliente: z.string().optional(),
+        enderecoCliente: z.string().optional(),
+        formaPagamento: z.string().trim().min(1, "Forma de pagamento é obrigatória."),
+        valorTotal: z.number().optional(),
         observacoes: z.string().optional(),
         tipoTransacao: tipoTransacaoSchema.default("venda"),
       })
@@ -87,14 +93,20 @@ export const vendasRouter = router({
     .use(withRateLimit({ scope: "vendas.registrar", max: 60, windowMs: 60 * 1000 }))
     .input(
       z.object({
-        items: z.array(
-          z.object({
-            productId: z.number(),
-            quantidade: z.number().int().min(1),
-          })
-        ),
+        items: z
+          .array(
+            z.object({
+              productId: z.number(),
+              quantidade: z.number().int().min(1),
+            })
+          )
+          .min(1, "Adicione ao menos um item na venda."),
         vendedor: z.string().optional(),
         nomeCliente: z.string().optional(),
+        telefoneCliente: z.string().optional(),
+        enderecoCliente: z.string().optional(),
+        formaPagamento: z.string().trim().min(1, "Forma de pagamento é obrigatória."),
+        valorTotal: z.number().optional(),
         dataVenda: z.date().optional(),
         observacoes: z.string().optional(),
         tipoTransacao: tipoTransacaoSchema.default("venda"),
@@ -118,14 +130,21 @@ export const vendasRouter = router({
     .use(withRateLimit({ scope: "vendas.registrar_importada", max: 60, windowMs: 60 * 1000 }))
     .input(
       z.object({
-        items: z.array(
-          z.object({
-            productId: z.number(),
-            quantidade: z.number().int().min(1),
-          })
-        ),
+        items: z
+          .array(
+            z.object({
+              productId: z.number(),
+              quantidade: z.number().int().min(1),
+            })
+          )
+          .min(1, "Adicione ao menos um item na venda."),
         vendedor: z.string().optional(),
         nomeCliente: z.string().optional(),
+        telefoneCliente: z.string().optional(),
+        enderecoCliente: z.string().optional(),
+        formaPagamento: z.string().trim().min(1, "Forma de pagamento é obrigatória."),
+        dataVenda: z.date().optional(),
+        valorTotal: z.number().optional(),
         observacoes: z.string().optional(),
         tipoTransacao: tipoTransacaoSchema.default("venda"),
         importMeta: z.object({
