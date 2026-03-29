@@ -1,5 +1,5 @@
 import { trpc } from "@/lib/trpc";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -21,18 +21,38 @@ interface CartItem {
 
 export default function PublicSales() {
   const [searchTerm, setSearchTerm] = useState("");
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
   const [selectedMedida, setSelectedMedida] = useState<string>("all");
   const [selectedCategoria, setSelectedCategoria] = useState<string>("all");
   const [cart, setCart] = useState<CartItem[]>([]);
   const [tipoTransacao, setTipoTransacao] = useState<"venda" | "troca" | "brinde" | "emprestimo" | "permuta">("venda");
+  const [visibleCount, setVisibleCount] = useState(20);
 
-  const { data: products, isLoading, refetch } = trpc.products.list.useQuery({
-    searchTerm: searchTerm || undefined,
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearchTerm(searchTerm), 300);
+    return () => window.clearTimeout(timer);
+  }, [searchTerm]);
+
+  useEffect(() => {
+    setVisibleCount(20);
+  }, [debouncedSearchTerm, selectedMedida, selectedCategoria]);
+
+  const { data: products, isLoading, error: productsError, refetch } = trpc.products.list.useQuery({
+    searchTerm: debouncedSearchTerm || undefined,
     medida: selectedMedida !== "all" ? selectedMedida : undefined,
     categoria: selectedCategoria !== "all" ? selectedCategoria : undefined,
     page: 1,
-    pageSize: 100,
+    pageSize: 40,
+  }, {
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+    placeholderData: (prev) => prev,
   });
+
+  const visibleProducts = useMemo(
+    () => (products?.items ?? []).slice(0, visibleCount),
+    [products?.items, visibleCount]
+  );
 
   const registerSaleMutation = trpc.vendas.registerPublic.useMutation({
     onSuccess: () => {
@@ -156,6 +176,16 @@ export default function PublicSales() {
       </div>
 
       <div className="container mx-auto px-4 py-8">
+        {productsError && (
+          <Card className="mb-6 border-destructive/30 bg-destructive/5">
+            <CardContent className="pt-6">
+              <p className="text-sm text-destructive font-medium">
+                Servidor fora do ar.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
         <div className="grid gap-8 lg:grid-cols-3">
           {/* Products Section */}
           <div className="lg:col-span-2 space-y-6">
@@ -223,7 +253,7 @@ export default function PublicSales() {
               </div>
             ) : products && products.items && products.items.length > 0 ? (
               <div className="grid gap-4 md:grid-cols-2">
-                {products.items.map((product) => (
+                {visibleProducts.map((product) => (
                   <Card key={product.id} className="border-border shadow-sm hover:shadow-md transition-shadow">
                     <CardContent className="p-4">
                       <div className="flex items-start justify-between">
@@ -260,6 +290,16 @@ export default function PublicSales() {
                     </CardContent>
                   </Card>
                 ))}
+                {products.items.length > visibleCount && (
+                  <div className="md:col-span-2 flex justify-center pt-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => setVisibleCount((prev) => prev + 20)}
+                    >
+                      Carregar mais produtos
+                    </Button>
+                  </div>
+                )}
               </div>
             ) : (
               <Card className="border-border shadow-sm">

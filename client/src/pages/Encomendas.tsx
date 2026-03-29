@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -98,7 +98,26 @@ export default function Encomendas() {
     status: statusFilter === "todos" ? undefined : statusFilter as any,
     cliente: clienteFilter || undefined 
   });
-  const { data: products } = trpc.products.list.useQuery({ page: 1, pageSize: 100 });
+  const productSearchTerm = productSearch.trim();
+  const { data: products, isLoading: loadingProducts } = trpc.products.list.useQuery(
+    {
+      searchTerm: productSearchTerm || undefined,
+      page: 1,
+      pageSize: 30,
+    },
+    {
+      enabled: showModal && !isCustomProduct,
+      staleTime: 60_000,
+      refetchOnWindowFocus: false,
+      placeholderData: (prev) => prev,
+    }
+  );
+  const filteredProductOptions = useMemo(() => {
+    const term = productSearchTerm.toLowerCase();
+    return (products?.items ?? []).filter(
+      (p) => p.name.toLowerCase().includes(term) || p.medida?.toLowerCase().includes(term)
+    );
+  }, [productSearchTerm, products?.items]);
   const createMutation = trpc.encomendas.create.useMutation();
   const updateMutation = trpc.encomendas.update.useMutation();
   const deleteMutation = trpc.encomendas.delete.useMutation();
@@ -426,14 +445,16 @@ export default function Encomendas() {
                     <SelectValue placeholder="Selecione um produto" />
                   </SelectTrigger>
                   <SelectContent>
-                    {products?.items
-                      ?.filter((p) => p.name.toLowerCase().includes(productSearch.toLowerCase()) || p.medida?.toLowerCase().includes(productSearch.toLowerCase()))
-                      .map((p) => (
+                    {loadingProducts ? (
+                      <div className="p-2 text-sm text-muted-foreground text-center">Carregando produtos...</div>
+                    ) : (
+                      filteredProductOptions.map((p) => (
                         <SelectItem key={p.id} value={p.id.toString()}>
                           {p.name} - {p.medida}
                         </SelectItem>
-                      ))}
-                    {(products?.items?.filter((p) => p.name.toLowerCase().includes(productSearch.toLowerCase()) || p.medida?.toLowerCase().includes(productSearch.toLowerCase())).length === 0) && (
+                      ))
+                    )}
+                    {filteredProductOptions.length === 0 && !loadingProducts && (
                       <div className="p-2 text-sm text-muted-foreground text-center">Nenhum produto encontrado</div>
                     )}
                   </SelectContent>

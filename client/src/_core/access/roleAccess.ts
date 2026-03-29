@@ -1,7 +1,7 @@
 /** Compat layer para migração de arquitetura */
 export {
   ROUTE_ACCESS,
-  canAccessPath,
+  canAccessPathByRole as canAccessPath,
   getAllowedRoles,
   type UserRole,
 } from "@/features/auth/access/roleAccess";

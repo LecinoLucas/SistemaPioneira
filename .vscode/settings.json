@@ -1,0 +1,44 @@
+{
+  "explorer.compactFolders": true,
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.expand": false,
+  "explorer.fileNesting.patterns": {
+    "package.json": "pnpm-lock.yaml,tsconfig.json,vite.config.ts,vitest.config.ts,components.json,drizzle.config.ts,.prettierrc,.prettierignore,.env.example",
+    ".env": ".env.example",
+    "README.md": "docs/TODO.md"
+  },
+  "files.exclude": {
+    "**/.git": true,
+    "**/.DS_Store": true,
+    "**/node_modules": true,
+    "**/.pnpm-store": true,
+    "**/.manus": true,
+    "**/.manus-logs": true,
+    "**/.dev-logs": true,
+    "**/dist": true,
+    "**/backups": true,
+    "**/coverage": true,
+    "**/.nyc_output": true,
+    "**/*.log": true,
+    "processes.json": true,
+    ".gitkeep": true,
+    "components.json": true,
+    "drizzle.config.ts": true,
+    "tsconfig.json": true,
+    "vite.config.ts": true,
+    "vitest.config.ts": true,
+    ".prettierrc": true,
+    ".prettierignore": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/.pnpm-store": true,
+    "**/.manus": true,
+    "**/.manus-logs": true,
+    "**/.dev-logs": true,
+    "**/dist": true,
+    "**/backups": true,
+    "**/coverage": true,
+    "**/.nyc_output": true
+  }
+}

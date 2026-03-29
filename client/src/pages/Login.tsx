@@ -22,7 +22,7 @@ type GoogleStatus =
   | "error";
 
 export default function Login() {
-  const { login, loading, user } = useAuth();
+  const { login, logout, loading, user } = useAuth();
   const [, setLocation] = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -30,12 +30,15 @@ export default function Login() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [googleStatus, setGoogleStatus] = useState<GoogleStatus>(null);
   const [retryIn, setRetryIn] = useState(30);
+  const searchParams = new URLSearchParams(window.location.search);
+  const redirectAfterLogin = searchParams.get("next") || "/";
+  const forceSwitch = searchParams.get("switch") === "1";
 
   useEffect(() => {
-    if (user) {
+    if (user && !forceSwitch) {
       setLocation("/");
     }
-  }, [user, setLocation]);
+  }, [user, forceSwitch, setLocation]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -91,7 +94,7 @@ export default function Login() {
     }
 
     toast.success("Login realizado com sucesso.");
-    setLocation("/");
+    setLocation(redirectAfterLogin);
   };
 
   const handleGoogleLogin = () => {
@@ -111,6 +114,15 @@ export default function Login() {
     }
     setEmail("usuario@pioneira.local");
     setPassword("user123");
+  };
+
+  const handleSwitchAccount = async () => {
+    try {
+      await logout();
+      toast.success("Sessão encerrada. Faça login com outra conta.");
+    } catch {
+      toast.error("Não foi possível encerrar a sessão atual.");
+    }
   };
 
   if (googleStatus === "pending") {
@@ -142,7 +154,10 @@ export default function Login() {
               <Button onClick={handleGoogleLogin} className="bg-indigo-600 hover:bg-indigo-700 text-white">
                 Tentar login Google novamente
               </Button>
-              <Button variant="outline" onClick={() => setGoogleStatus(null)}>
+              <Button variant="outline" onClick={() => {
+                setGoogleStatus(null);
+                window.history.replaceState(null, "", `${window.location.pathname}?switch=1`);
+              }}>
                 Entrar com usuário admin
               </Button>
             </div>
@@ -237,6 +252,21 @@ export default function Login() {
                 <h2 className="text-3xl font-bold text-slate-900">Bem-vindo!</h2>
                 <p className="text-slate-600">Entre com suas credenciais para continuar</p>
               </div>
+
+              {user && forceSwitch ? (
+                <Alert className="border-amber-200 bg-amber-50">
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertTitle>Você já está autenticado</AlertTitle>
+                  <AlertDescription className="space-y-3">
+                    <p>
+                      Sessão atual: <strong>{user.email ?? user.openId}</strong> ({user.role})
+                    </p>
+                    <Button type="button" variant="outline" onClick={handleSwitchAccount}>
+                      Sair e entrar com outra conta
+                    </Button>
+                  </AlertDescription>
+                </Alert>
+              ) : null}
 
               {googleStatus ? (
                 <Alert variant="destructive" className="border-red-200 bg-red-50">

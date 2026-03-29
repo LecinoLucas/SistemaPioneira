@@ -7,6 +7,16 @@ export const loginInputSchema = z.object({
 
 export const userIdSchema = z.object({ userId: z.number().int().positive() });
 
+export const permissionEntrySchema = z.object({
+  permissionKey: z.string().min(3).max(191),
+  allowed: z.boolean(),
+});
+
+export const updateUserPermissionsSchema = z.object({
+  userId: z.number().int().positive(),
+  permissions: z.array(permissionEntrySchema).max(500),
+});
+
 export const auditFilterSchema = z
   .object({
     limit: z.number().int().min(1).max(500).default(100),

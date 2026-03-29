@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
@@ -16,6 +17,123 @@ const state = {
   frontendUrl: "http://localhost:5173",
   shuttingDown: false,
 };
+
+const DEFAULT_BACKEND_PORT = 3001;
+const DEFAULT_FRONTEND_PORT = 5173;
+const KNOWN_BACKEND_PORTS = [3001, 3002, 3008];
+const KNOWN_FRONTEND_PORTS = [5173, 5174];
+
+async function httpGetJson(url, timeoutMs = 1200) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    const text = await response.text();
+    let parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = null;
+    }
+    return { ok: response.ok, status: response.status, body: parsed, raw: text };
+  } catch (error) {
+    return { ok: false, status: 0, body: null, raw: String(error) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parsePort(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 1 || n > 65535) return fallback;
+  return Math.trunc(n);
+}
+
+async function findAvailablePort(startPort, maxAttempts = 50) {
+  for (let i = 0; i < maxAttempts; i += 1) {
+    const port = startPort + i;
+    // eslint-disable-next-line no-await-in-loop
+    const busy = await isPortListening(port);
+    if (!busy) return port;
+  }
+  throw new Error(`Não foi possível encontrar porta livre a partir de ${startPort}.`);
+}
+
+async function waitForBackendHealth(baseUrl, timeoutMs = 25000, intervalMs = 500) {
+  const startedAt = Date.now();
+  let lastProbe = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    // eslint-disable-next-line no-await-in-loop
+    lastProbe = await httpGetJson(`${baseUrl}/api/health`, 1500);
+    if (lastProbe.ok && lastProbe.body?.ok === true) {
+      return { ok: true, probe: lastProbe, elapsedMs: Date.now() - startedAt };
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(intervalMs);
+  }
+
+  return { ok: false, probe: lastProbe, elapsedMs: Date.now() - startedAt };
+}
+
+async function waitForFrontendReady(baseUrl, timeoutMs = 25000, intervalMs = 500) {
+  const startedAt = Date.now();
+  let lastProbe = null;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    // eslint-disable-next-line no-await-in-loop
+    lastProbe = await httpGetJson(`${baseUrl}/@vite/client`, 1500);
+    if (lastProbe.ok && typeof lastProbe.raw === "string" && lastProbe.raw.length > 0) {
+      return { ok: true, probe: lastProbe, elapsedMs: Date.now() - startedAt };
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await sleep(intervalMs);
+  }
+
+  return { ok: false, probe: lastProbe, elapsedMs: Date.now() - startedAt };
+}
+
+async function isCompatibleBackend(port) {
+  const health = await httpGetJson(`http://127.0.0.1:${port}/api/health`);
+  return Boolean(health.ok && health.body && typeof health.body === "object" && health.body.ok === true);
+}
+
+async function isLikelyViteFrontend(port) {
+  const clientProbe = await httpGetJson(`http://127.0.0.1:${port}/@vite/client`);
+  if (clientProbe.ok && clientProbe.raw.includes("/@vite/client")) {
+    return true;
+  }
+  const htmlProbe = await httpGetJson(`http://127.0.0.1:${port}/`);
+  if (!htmlProbe.ok) return false;
+  return (
+    htmlProbe.raw.includes("/@vite/client") ||
+    htmlProbe.raw.includes("type=\"module\"") ||
+    htmlProbe.raw.includes("vite")
+  );
+}
+
+async function showStatus() {
+  const processes = readProcesses();
+  const backendPort = parsePort(processes?.backend?.port, DEFAULT_BACKEND_PORT);
+  const frontendPort = parsePort(processes?.frontend?.port, DEFAULT_FRONTEND_PORT);
+  const backendUrl = processes?.backend?.url || `http://localhost:${backendPort}`;
+  const frontendUrl = processes?.frontend?.url || `http://localhost:${frontendPort}`;
+
+  const [backendListening, frontendListening] = await Promise.all([
+    isPortListening(backendPort),
+    isPortListening(frontendPort),
+  ]);
+
+  console.log(`backend: ${backendListening ? "running" : "stopped"} (${backendUrl})`);
+  console.log(`frontend: ${frontendListening ? "running" : "stopped"} (${frontendUrl})`);
+  console.log(
+    `managed-pids: backend=${processes?.backend?.pid ?? "none"} frontend=${processes?.frontend?.pid ?? "none"}`
+  );
+}
 
 function ensureDir(dirPath) {
   if (!fs.existsSync(dirPath)) {
@@ -65,37 +183,29 @@ function isPidRunning(pid) {
   }
 }
 
-function listListeningPidsOnPorts(ports) {
-  if (process.platform === "win32") return [];
-  if (!Array.isArray(ports) || ports.length === 0) return [];
+function isPortListeningOnHost(port, host) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ port, host });
+    let settled = false;
 
-  const result = spawnSync("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN"], {
-    encoding: "utf8",
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(value);
+    };
+
+    socket.setTimeout(350);
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
   });
-
-  if (result.status !== 0 || !result.stdout) return [];
-
-  const tracked = new Set(ports.map((port) => String(port)));
-  const pids = new Set();
-  const lines = result.stdout.split(/\r?\n/).slice(1);
-
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    const cols = line.trim().split(/\s+/);
-    const pid = Number(cols[1]);
-    const lastCol = cols.at(-1) ?? "";
-    const match = lastCol.match(/:(\d+)\s*\(LISTEN\)$/);
-    if (!match) continue;
-    const port = match[1];
-    if (!tracked.has(port) || Number.isNaN(pid)) continue;
-    pids.add(pid);
-  }
-
-  return Array.from(pids);
 }
 
-function isPortListening(port) {
-  return listListeningPidsOnPorts([port]).length > 0;
+async function isPortListening(port) {
+  if (await isPortListeningOnHost(port, "127.0.0.1")) return true;
+  if (await isPortListeningOnHost(port, "::1")) return true;
+  return false;
 }
 
 function tailLines(content, n) {
@@ -149,25 +259,66 @@ function killProcessTree(pid) {
   }, 1200);
 }
 
+function listPidsListeningOnPort(port) {
+  const result = spawnSync("lsof", ["-ti", `tcp:${port}`], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+
+  if (result.status !== 0 || !result.stdout) return [];
+  return result.stdout
+    .split(/\r?\n/)
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isFinite(value) && value > 1);
+}
+
+function forceStopPorts(ports) {
+  const uniquePorts = Array.from(new Set(ports.filter((p) => Number.isFinite(p) && p > 0)));
+  const pids = new Set();
+
+  for (const port of uniquePorts) {
+    const listeningPids = listPidsListeningOnPort(port);
+    for (const pid of listeningPids) {
+      if (pid !== process.pid) pids.add(pid);
+    }
+  }
+
+  if (pids.size === 0) {
+    console.log("[DEV-MANAGER] Nenhum processo órfão encontrado nas portas de dev.");
+    return;
+  }
+
+  for (const pid of pids) {
+    killProcessTree(pid);
+    console.log(`[DEV-MANAGER] processo encerrado por limpeza full: PID ${pid}`);
+  }
+}
+
+async function forcePortForService(port, serviceLabel) {
+  const busy = await isPortListening(port);
+  if (!busy) return;
+
+  const pids = listPidsListeningOnPort(port).filter((pid) => pid !== process.pid);
+  if (pids.length === 0) return;
+
+  for (const pid of pids) {
+    killProcessTree(pid);
+    console.log(`[DEV-MANAGER] ${serviceLabel}: porta ${port} ocupada. Processo encerrado (PID ${pid}).`);
+  }
+
+  await sleep(250);
+}
+
 function stopManagedProcesses({ silent = false } = {}) {
   const processes = readProcesses();
-  const alreadyKilled = new Set();
 
   if (processes.backend?.pid) {
     killProcessTree(processes.backend.pid);
-    alreadyKilled.add(Number(processes.backend.pid));
     if (!silent) console.log(`[STOP] backend PID ${processes.backend.pid}`);
   }
   if (processes.frontend?.pid) {
     killProcessTree(processes.frontend.pid);
-    alreadyKilled.add(Number(processes.frontend.pid));
     if (!silent) console.log(`[STOP] frontend PID ${processes.frontend.pid}`);
-  }
-
-  for (const pid of listListeningPidsOnPorts([3001, 5173])) {
-    if (alreadyKilled.has(pid)) continue;
-    killProcessTree(pid);
-    if (!silent) console.log(`[STOP] orphan PID ${pid}`);
   }
 
   writeProcesses({ backend: null, frontend: null, startedAt: null });
@@ -251,7 +402,14 @@ function resolveServiceConfig() {
   return {
     backend: backendHasOwnPackage
       ? { cmd: npmCmd, args: ["run", "dev"], cwd: backendDir, env: process.env }
-      : { cmd: npmCmd, args: ["run", "dev:backend"], cwd: ROOT_DIR, env: { ...process.env, PORT: "3001", NODE_ENV: "development" } },
+      : {
+          // Usa execução direta com tsx (sem watch) para evitar falhas intermitentes
+          // de IPC do "tsx watch" que derrubam o backend e causam ECONNREFUSED no frontend.
+          cmd: "node",
+          args: ["--import", "tsx", "server/_core/index.ts"],
+          cwd: ROOT_DIR,
+          env: { ...process.env, PORT: "3001", NODE_ENV: "development" },
+        },
     frontend: frontendHasOwnPackage
       ? { cmd: npmCmd, args: ["run", "dev"], cwd: frontendDir, env: process.env }
       : { cmd: npmCmd, args: ["run", "dev:frontend"], cwd: ROOT_DIR, env: process.env },
@@ -270,7 +428,7 @@ function assertProjectDirs() {
   }
 }
 
-function start() {
+async function start() {
   assertProjectDirs();
   ensureDir(LOG_DIR);
   fs.writeFileSync(BACKEND_LOG, "", "utf8");
@@ -289,30 +447,100 @@ function start() {
   }
 
   const services = resolveServiceConfig();
+  const desiredBackendPort = parsePort(process.env.BACKEND_PORT, DEFAULT_BACKEND_PORT);
+  const desiredFrontendPort = parsePort(process.env.FRONTEND_PORT, DEFAULT_FRONTEND_PORT);
+  const backendPort = desiredBackendPort;
+  const frontendPort = desiredFrontendPort;
+
+  await forcePortForService(backendPort, "backend");
+  await forcePortForService(frontendPort, "frontend");
+
+  const backendBaseUrl = `http://localhost:${backendPort}`;
+  state.backendUrl = backendBaseUrl;
+
+  const frontendBaseUrl = `http://localhost:${frontendPort}`;
+  state.frontendUrl = frontendBaseUrl;
 
   const backend = spawn(services.backend.cmd, services.backend.args, {
     cwd: services.backend.cwd,
     detached: false,
-    env: services.backend.env,
+    env: {
+      ...services.backend.env,
+      PORT: String(backendPort),
+      FRONTEND_URL: `${frontendBaseUrl},http://localhost:5173,http://localhost:5174`,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  const frontend = spawn(services.frontend.cmd, services.frontend.args, {
+  const frontendArgs = services.frontend.args.concat(["--", "--port", String(frontendPort)]);
+
+  const frontend = spawn(services.frontend.cmd, frontendArgs, {
     cwd: services.frontend.cwd,
     detached: false,
-    env: services.frontend.env,
+    env: {
+      ...services.frontend.env,
+      FRONTEND_PORT: String(frontendPort),
+      PORT: String(frontendPort),
+      VITE_API_BASE_URL: backendBaseUrl,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
 
   writeProcesses({
     startedAt: new Date().toISOString(),
-    backend: { pid: backend.pid, cwd: services.backend.cwd, logFile: BACKEND_LOG },
-    frontend: { pid: frontend.pid, cwd: services.frontend.cwd, logFile: FRONTEND_LOG },
+    backend: {
+      pid: backend?.pid ?? null,
+      cwd: services.backend.cwd,
+      logFile: BACKEND_LOG,
+      port: backendPort,
+      url: backendBaseUrl,
+      reused: false,
+    },
+    frontend: {
+      pid: frontend?.pid ?? null,
+      cwd: services.frontend.cwd,
+      logFile: FRONTEND_LOG,
+      port: frontendPort,
+      url: frontendBaseUrl,
+      reused: false,
+    },
   });
 
-  attachLogging(backend, "backend");
-  attachLogging(frontend, "frontend");
+  if (backend) attachLogging(backend, "backend");
+  if (frontend) attachLogging(frontend, "frontend");
+
+  const backendHealth = await waitForBackendHealth(backendBaseUrl);
+  if (!backendHealth.ok) {
+    console.error(
+      `[DEV-MANAGER] backend não ficou saudável em ${backendBaseUrl} após ${backendHealth.elapsedMs}ms.`
+    );
+    if (backendHealth.probe?.status) {
+      console.error(
+        `[DEV-MANAGER] último status recebido: ${backendHealth.probe.status}`
+      );
+    }
+    if (backendHealth.probe?.raw) {
+      console.error(`[DEV-MANAGER] último retorno: ${backendHealth.probe.raw}`);
+    }
+    stopManagedProcesses({ silent: true });
+    throw new Error("backend_healthcheck_failed");
+  }
+
   printStatus();
+  console.log(
+    `[DEV-MANAGER] backend saudável em ${backendBaseUrl} (${backendHealth.elapsedMs}ms).`
+  );
+
+  const frontendReady = await waitForFrontendReady(frontendBaseUrl, 12000, 400);
+  if (frontendReady.ok) {
+    console.log(
+      `[DEV-MANAGER] frontend saudável em ${frontendBaseUrl} (${frontendReady.elapsedMs}ms).`
+    );
+  } else {
+    console.warn(
+      `[DEV-MANAGER] frontend não respondeu como Vite em ${frontendBaseUrl} após ${frontendReady.elapsedMs}ms.`
+    );
+  }
 
   const shutdown = (signal = "SIGTERM") => {
     if (state.shuttingDown) return;
@@ -336,30 +564,74 @@ function start() {
     shutdown("unhandledRejection");
   });
 
-  backend.on("exit", (code, signal) => {
-    if (state.shuttingDown) return;
-    console.log(`[BACKEND] processo finalizado (code=${code ?? "null"}, signal=${signal ?? "null"})`);
-    if (isPortListening(3001)) {
-      console.log("[DEV-MANAGER] backend existente detectado na porta 3001, mantendo frontend ativo.");
-      return;
-    }
-    shutdown("backend-exit");
-  });
-  frontend.on("exit", (code, signal) => {
-    if (state.shuttingDown) return;
-    console.log(`[FRONTEND] processo finalizado (code=${code ?? "null"}, signal=${signal ?? "null"})`);
-    shutdown("frontend-exit");
-  });
+  if (backend) {
+    backend.on("exit", (code, signal) => {
+      if (state.shuttingDown) return;
+      console.log(`[BACKEND] processo finalizado (code=${code ?? "null"}, signal=${signal ?? "null"})`);
+      void isPortListening(backendPort)
+        .then((listening) => {
+          if (listening) {
+            console.log(`[DEV-MANAGER] backend existente detectado na porta ${backendPort}, mantendo frontend ativo.`);
+            return;
+          }
+          shutdown("backend-exit");
+        })
+        .catch(() => shutdown("backend-exit"));
+    });
+  }
+
+  if (frontend) {
+    frontend.on("exit", (code, signal) => {
+      if (state.shuttingDown) return;
+      console.log(`[FRONTEND] processo finalizado (code=${code ?? "null"}, signal=${signal ?? "null"})`);
+      void waitForBackendHealth(backendBaseUrl, 8000, 400)
+        .then((backendHealth) => {
+          if (backendHealth.ok) {
+            console.log(
+              `[DEV-MANAGER] frontend caiu, mas backend segue ativo em ${backendBaseUrl}.`
+            );
+            console.log(
+              "[DEV-MANAGER] reinicie apenas o frontend com: npm run dev:frontend -- --port 5173"
+            );
+            return;
+          }
+          shutdown("frontend-exit");
+        })
+        .catch(() => shutdown("frontend-exit"));
+    });
+  }
 
   process.stdin.resume();
 }
 
-function main() {
-  const command = process.argv[2];
+async function fullStart() {
+  const existing = readProcesses();
+  const desiredBackendPort = parsePort(process.env.BACKEND_PORT, DEFAULT_BACKEND_PORT);
+  const desiredFrontendPort = parsePort(process.env.FRONTEND_PORT, DEFAULT_FRONTEND_PORT);
+
+  const cleanupPorts = [
+    desiredBackendPort,
+    desiredFrontendPort,
+    ...(existing?.backend?.port ? [parsePort(existing.backend.port, DEFAULT_BACKEND_PORT)] : []),
+    ...(existing?.frontend?.port ? [parsePort(existing.frontend.port, DEFAULT_FRONTEND_PORT)] : []),
+    ...KNOWN_BACKEND_PORTS,
+    ...KNOWN_FRONTEND_PORTS,
+  ];
+
+  stopManagedProcesses({ silent: true });
+  forceStopPorts(cleanupPorts);
+  await start();
+}
+
+async function main() {
+  const command = process.argv[2] || "start";
 
   switch (command) {
     case "start":
-      start();
+      await start();
+      break;
+    case "full":
+      await fullStart();
       break;
     case "stop":
       stopManagedProcesses();
@@ -368,10 +640,16 @@ function main() {
     case "log":
       showLogs();
       break;
+    case "status":
+      await showStatus();
+      break;
     default:
-      console.log("Uso: node dev-manager.js <start|stop|log>");
+      console.log("Uso: node dev-manager.js <start|full|stop|log|status>");
       process.exit(1);
   }
 }
 
-main();
+main().catch((error) => {
+  console.error("[DEV-MANAGER] erro:", error);
+  process.exit(1);
+});

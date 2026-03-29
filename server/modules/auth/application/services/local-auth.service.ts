@@ -184,7 +184,9 @@ export class LocalAuthService {
         lastSignedIn: new Date(),
       });
     } catch (error) {
-      console.warn("[Auth] Não foi possível atualizar versão global de sessão:", error);
+      if (process.env.NODE_ENV !== "test") {
+        console.warn("[Auth] Não foi possível atualizar versão global de sessão:", error);
+      }
     }
   }
 }

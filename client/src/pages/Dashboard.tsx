@@ -1,22 +1,48 @@
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { API_BASE_URL } from "@/const";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { AlertTriangle, Package, TrendingDown, Activity, FileDown, FileSpreadsheet } from "lucide-react";
+import { AlertTriangle, Package, TrendingDown, Activity, FileDown, FileSpreadsheet, Server, Database, Timer } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { exportToPDF, exportToExcel } from "@/lib/exportUtils";
 import { toast } from "sonner";
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 
 const DashboardCharts = lazy(() => import("@/components/dashboard/DashboardCharts"));
+const LATENCY_WARN_MS = 800;
+const LATENCY_WARN_COOLDOWN_MS = 2 * 60 * 1000;
+
+type HealthSnapshot = {
+  ok: boolean;
+  ready?: boolean;
+  timestamp?: string;
+  uptimeMs?: number;
+  db?: {
+    status?: "up" | "down" | "unconfigured";
+    latencyMs?: number | null;
+  };
+};
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const canViewStockAlerts = user?.role === "admin" || user?.role === "gerente";
   const [showReplenishmentModal, setShowReplenishmentModal] = useState(false);
   const [showEncomendasModal, setShowEncomendasModal] = useState(false);
   const [enableInsights, setEnableInsights] = useState(false);
+  const [insightsInView, setInsightsInView] = useState(false);
+  const [health, setHealth] = useState<HealthSnapshot | null>(null);
+  const [healthLoading, setHealthLoading] = useState(true);
+  const [healthError, setHealthError] = useState<string | null>(null);
+  const [apiLatencyMs, setApiLatencyMs] = useState<number | null>(null);
+  const prevApiDownRef = useRef(false);
+  const prevDbDownRef = useRef(false);
+  const prevApiHighLatencyRef = useRef(false);
+  const prevDbHighLatencyRef = useRef(false);
+  const lastApiLatencyWarnAtRef = useRef(0);
+  const lastDbLatencyWarnAtRef = useRef(0);
+  const insightsAnchorRef = useRef<HTMLDivElement | null>(null);
   
   const queryOptions = { staleTime: 60_000, refetchOnWindowFocus: false };
   const { data: stats, isLoading: statsLoading } = trpc.dashboard.stats.useQuery(undefined, queryOptions);
@@ -39,11 +65,17 @@ export default function Dashboard() {
     };
   }, []);
 
-  const { data: topSelling } = trpc.dashboard.topSelling.useQuery({
-    startDate: startOfMonth,
-    endDate: endOfMonth,
-    limit: 5,
-  }, queryOptions);
+  const { data: topSelling } = trpc.dashboard.topSelling.useQuery(
+    {
+      startDate: startOfMonth,
+      endDate: endOfMonth,
+      limit: 5,
+    },
+    {
+      ...queryOptions,
+      enabled: enableInsights,
+    }
+  );
   
   // Get sales data for charts
   const { data: salesByDate } = trpc.dashboard.salesByDate.useQuery(
@@ -94,6 +126,7 @@ export default function Dashboard() {
       toast.error("Dados não disponíveis para exportação");
       return;
     }
+    const { exportToPDF } = await import("@/lib/exportUtils");
     exportToPDF(data);
     toast.success("Relatório PDF exportado com sucesso!");
   };
@@ -104,15 +137,152 @@ export default function Dashboard() {
       toast.error("Dados não disponíveis para exportação");
       return;
     }
+    const { exportToExcel } = await import("@/lib/exportUtils");
     exportToExcel(data);
     toast.success("Relatório Excel exportado com sucesso!");
   };
 
   useEffect(() => {
-    if (statsLoading || lowStockLoading || enableInsights) return;
-    const timeoutId = window.setTimeout(() => setEnableInsights(true), 300);
-    return () => window.clearTimeout(timeoutId);
-  }, [statsLoading, lowStockLoading, enableInsights]);
+    if (enableInsights) return;
+    if (statsLoading || lowStockLoading) return;
+    if (!insightsInView) return;
+    setEnableInsights(true);
+  }, [enableInsights, insightsInView, lowStockLoading, statsLoading]);
+
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") {
+      setInsightsInView(true);
+      return;
+    }
+    const anchor = insightsAnchorRef.current;
+    if (!anchor) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setInsightsInView(true);
+            observer.disconnect();
+            break;
+          }
+        }
+      },
+      { rootMargin: "200px 0px" }
+    );
+
+    observer.observe(anchor);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!isAdmin) {
+      setHealthLoading(false);
+      return;
+    }
+
+    let active = true;
+    let timer: number | undefined;
+
+    const fetchHealth = async () => {
+      const startedAt = performance.now();
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/health`, {
+          credentials: "include",
+          cache: "no-store",
+        });
+        if (!response.ok) {
+          throw new Error(`health_http_${response.status}`);
+        }
+        const payload = (await response.json()) as HealthSnapshot;
+        if (!active) return;
+        setHealth(payload);
+        setApiLatencyMs(Math.round(performance.now() - startedAt));
+        setHealthError(null);
+      } catch (error) {
+        if (!active) return;
+        setHealth(null);
+        setApiLatencyMs(Math.round(performance.now() - startedAt));
+        setHealthError(error instanceof Error ? error.message : "health_check_failed");
+      } finally {
+        if (active) setHealthLoading(false);
+      }
+    };
+
+    void fetchHealth();
+    timer = window.setInterval(() => {
+      void fetchHealth();
+    }, 15_000);
+
+    return () => {
+      active = false;
+      if (timer) window.clearInterval(timer);
+    };
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin || healthLoading) return;
+
+    const apiDown = Boolean(healthError);
+    const dbDown = health?.db?.status === "down";
+
+    if (apiDown && !prevApiDownRef.current) {
+      toast.error("API fora do ar", {
+        description: "O frontend não está conseguindo comunicar com o servidor.",
+      });
+    }
+    if (!apiDown && prevApiDownRef.current) {
+      toast.success("API restabelecida");
+    }
+    prevApiDownRef.current = apiDown;
+
+    if (dbDown && !prevDbDownRef.current) {
+      toast.error("Banco de dados indisponível", {
+        description: "API online, mas sem acesso ao banco no momento.",
+      });
+    }
+    if (!dbDown && prevDbDownRef.current) {
+      toast.success("Banco de dados restabelecido");
+    }
+    prevDbDownRef.current = dbDown;
+
+    const now = Date.now();
+    const apiHighLatency =
+      !apiDown && apiLatencyMs != null && apiLatencyMs >= LATENCY_WARN_MS;
+    const dbHighLatency =
+      !dbDown &&
+      health?.db?.latencyMs != null &&
+      health.db.latencyMs >= LATENCY_WARN_MS;
+
+    if (
+      apiHighLatency &&
+      (!prevApiHighLatencyRef.current ||
+        now - lastApiLatencyWarnAtRef.current >= LATENCY_WARN_COOLDOWN_MS)
+    ) {
+      toast.warning("Latência alta na API", {
+        description: `Tempo atual: ${apiLatencyMs} ms`,
+      });
+      lastApiLatencyWarnAtRef.current = now;
+    }
+    if (!apiHighLatency && prevApiHighLatencyRef.current) {
+      toast.success("Latência da API normalizada");
+    }
+    prevApiHighLatencyRef.current = apiHighLatency;
+
+    if (
+      dbHighLatency &&
+      (!prevDbHighLatencyRef.current ||
+        now - lastDbLatencyWarnAtRef.current >= LATENCY_WARN_COOLDOWN_MS)
+    ) {
+      toast.warning("Latência alta no banco", {
+        description: `Tempo atual: ${health?.db?.latencyMs ?? "-"} ms`,
+      });
+      lastDbLatencyWarnAtRef.current = now;
+    }
+    if (!dbHighLatency && prevDbHighLatencyRef.current) {
+      toast.success("Latência do banco normalizada");
+    }
+    prevDbHighLatencyRef.current = dbHighLatency;
+  }, [isAdmin, healthLoading, healthError, apiLatencyMs, health?.db?.status, health?.db?.latencyMs]);
 
   if (statsLoading || (canViewStockAlerts && lowStockLoading)) {
     return (
@@ -140,6 +310,73 @@ export default function Dashboard() {
           </Button>
         </div>
       </div>
+
+      {isAdmin && (
+        <Card className="border-border shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Server className="h-4 w-4" />
+              Saúde do Sistema
+            </CardTitle>
+            <CardDescription>Monitoramento em tempo real da API e banco</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {healthLoading ? (
+              <p className="text-sm text-muted-foreground">Verificando saúde do sistema...</p>
+            ) : (
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="rounded-lg border p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground">API</span>
+                    <Badge variant={healthError ? "destructive" : "default"}>
+                      {healthError ? "offline" : "online"}
+                    </Badge>
+                  </div>
+                  <p className="mt-2 text-sm font-medium flex items-center gap-2">
+                    <Timer className="h-4 w-4 text-muted-foreground" />
+                    {apiLatencyMs != null ? `${apiLatencyMs} ms` : "-"}
+                  </p>
+                </div>
+
+                <div className="rounded-lg border p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground">Banco</span>
+                    <Badge
+                      variant={
+                        health?.db?.status === "up"
+                          ? "default"
+                          : health?.db?.status === "unconfigured"
+                            ? "secondary"
+                            : "destructive"
+                      }
+                    >
+                      {health?.db?.status ?? "offline"}
+                    </Badge>
+                  </div>
+                  <p className="mt-2 text-sm font-medium flex items-center gap-2">
+                    <Database className="h-4 w-4 text-muted-foreground" />
+                    {health?.db?.latencyMs != null ? `${health.db.latencyMs} ms` : "-"}
+                  </p>
+                </div>
+
+                <div className="rounded-lg border p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-muted-foreground">Uptime API</span>
+                    <Badge variant={health?.ok ? "default" : "destructive"}>
+                      {health?.ok ? "ok" : "erro"}
+                    </Badge>
+                  </div>
+                  <p className="mt-2 text-sm font-medium">
+                    {health?.uptimeMs != null
+                      ? `${Math.floor(health.uptimeMs / 1000)}s`
+                      : "-"}
+                  </p>
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-5">
         <Card className="border-border shadow-sm">
@@ -257,6 +494,7 @@ export default function Dashboard() {
         </Card>
       )}
 
+      <div ref={insightsAnchorRef} />
       {enableInsights ? (
         <Suspense
           fallback={

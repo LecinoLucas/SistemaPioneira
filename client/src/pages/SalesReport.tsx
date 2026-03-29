@@ -24,12 +24,18 @@ export default function SalesReport() {
   const [endDate, setEndDate] = useState("");
   const [vendedor, setVendedor] = useState("Todos");
   const [nomeCliente, setNomeCliente] = useState("");
+  const [appliedFilters, setAppliedFilters] = useState({
+    startDate: "",
+    endDate: "",
+    vendedor: "Todos",
+    nomeCliente: "",
+  });
 
-  const { data: vendas, isLoading, refetch } = trpc.vendas.relatorio.useQuery({
-    startDate: startDate ? new Date(startDate) : undefined,
-    endDate: endDate ? new Date(endDate) : undefined,
-    vendedor: vendedor !== "Todos" ? vendedor : undefined,
-    nomeCliente: nomeCliente || undefined,
+  const { data: vendas, isLoading } = trpc.vendas.relatorio.useQuery({
+    startDate: appliedFilters.startDate ? new Date(appliedFilters.startDate) : undefined,
+    endDate: appliedFilters.endDate ? new Date(appliedFilters.endDate) : undefined,
+    vendedor: appliedFilters.vendedor !== "Todos" ? appliedFilters.vendedor : undefined,
+    nomeCliente: appliedFilters.nomeCliente || undefined,
   });
 
   const exportPdfMutation = trpc.vendas.exportarRelatorioPdf.useMutation({
@@ -67,24 +73,29 @@ export default function SalesReport() {
   });
 
   const handleFilter = () => {
-    refetch();
+    setAppliedFilters({
+      startDate,
+      endDate,
+      vendedor,
+      nomeCliente,
+    });
   };
 
   const handleExportPdf = () => {
     exportPdfMutation.mutate({
-      startDate: startDate ? new Date(startDate) : undefined,
-      endDate: endDate ? new Date(endDate) : undefined,
-      vendedor: vendedor !== "Todos" ? vendedor : undefined,
-      nomeCliente: nomeCliente || undefined,
+      startDate: appliedFilters.startDate ? new Date(appliedFilters.startDate) : undefined,
+      endDate: appliedFilters.endDate ? new Date(appliedFilters.endDate) : undefined,
+      vendedor: appliedFilters.vendedor !== "Todos" ? appliedFilters.vendedor : undefined,
+      nomeCliente: appliedFilters.nomeCliente || undefined,
     });
   };
 
   const handleExportExcel = () => {
     exportExcelMutation.mutate({
-      startDate: startDate ? new Date(startDate) : undefined,
-      endDate: endDate ? new Date(endDate) : undefined,
-      vendedor: vendedor !== "Todos" ? vendedor : undefined,
-      nomeCliente: nomeCliente || undefined,
+      startDate: appliedFilters.startDate ? new Date(appliedFilters.startDate) : undefined,
+      endDate: appliedFilters.endDate ? new Date(appliedFilters.endDate) : undefined,
+      vendedor: appliedFilters.vendedor !== "Todos" ? appliedFilters.vendedor : undefined,
+      nomeCliente: appliedFilters.nomeCliente || undefined,
     });
   };
 

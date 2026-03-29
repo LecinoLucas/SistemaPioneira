@@ -18,6 +18,18 @@ export const users = mysqlTable("users", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
+export const userPermissions = mysqlTable("user_permissions", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().references(() => users.id, { onDelete: "cascade" }),
+  permissionKey: varchar("permissionKey", { length: 191 }).notNull(),
+  allowed: boolean("allowed").notNull().default(true),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type UserPermission = typeof userPermissions.$inferSelect;
+export type InsertUserPermission = typeof userPermissions.$inferInsert;
+
 /**
  * Brands table - stores product brands
  */
@@ -50,10 +62,11 @@ export const products = mysqlTable("products", {
     "Box Tradicional",
     "Acessórios",
     "Bicamas",
-    "Camas"
+    "Camas",
   ]).notNull(),
   quantidade: int("quantidade").notNull().default(0),
   estoqueMinimo: int("estoqueMinimo").notNull().default(3),
+  ativoParaVenda: boolean("ativoParaVenda").notNull().default(true),
   precoCusto: decimal("precoCusto", { precision: 10, scale: 2 }),
   precoVenda: decimal("precoVenda", { precision: 10, scale: 2 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -68,13 +81,13 @@ export type InsertProduct = typeof products.$inferInsert;
  */
 export const movimentacoes = mysqlTable("movimentacoes", {
   id: int("id").autoincrement().primaryKey(),
-  productId: int("productId").notNull(),
+  productId: int("productId").notNull().references(() => products.id, { onDelete: "restrict" }),
   tipo: mysqlEnum("tipo", ["entrada", "saida"]).notNull(),
   quantidade: int("quantidade").notNull(),
   quantidadeAnterior: int("quantidadeAnterior").notNull(),
   quantidadeNova: int("quantidadeNova").notNull(),
   observacao: text("observacao"),
-  userId: int("userId"),
+  userId: int("userId").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
@@ -86,16 +99,18 @@ export type InsertMovimentacao = typeof movimentacoes.$inferInsert;
  */
 export const vendas = mysqlTable("vendas", {
   id: int("id").autoincrement().primaryKey(),
-  productId: int("productId").notNull(),
+  productId: int("productId").notNull().references(() => products.id, { onDelete: "restrict" }),
   quantidade: int("quantidade").notNull(),
   dataVenda: timestamp("dataVenda").notNull(),
   vendedor: varchar("vendedor", { length: 100 }),
   nomeCliente: varchar("nomeCliente", { length: 200 }),
-  tipoTransacao: mysqlEnum("tipoTransacao", ["venda", "troca", "brinde", "emprestimo", "permuta"]).default("venda").notNull(),
+  tipoTransacao: mysqlEnum("tipoTransacao", ["venda", "troca", "brinde", "emprestimo", "permuta"])
+    .default("venda")
+    .notNull(),
   status: mysqlEnum("status", ["concluida", "cancelada"]).default("concluida").notNull(),
   motivoCancelamento: text("motivoCancelamento"),
   observacoes: text("observacoes"),
-  userId: int("userId"),
+  userId: int("userId").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
@@ -107,12 +122,12 @@ export type InsertVenda = typeof vendas.$inferInsert;
  */
 export const historicoPrecos = mysqlTable("historicoPrecos", {
   id: int("id").autoincrement().primaryKey(),
-  productId: int("productId").notNull(),
+  productId: int("productId").notNull().references(() => products.id, { onDelete: "cascade" }),
   precoCustoAnterior: decimal("precoCustoAnterior", { precision: 10, scale: 2 }),
   precoCustoNovo: decimal("precoCustoNovo", { precision: 10, scale: 2 }),
   precoVendaAnterior: decimal("precoVendaAnterior", { precision: 10, scale: 2 }),
   precoVendaNovo: decimal("precoVendaNovo", { precision: 10, scale: 2 }),
-  userId: int("userId"),
+  userId: int("userId").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
@@ -125,7 +140,7 @@ export type InsertHistoricoPreco = typeof historicoPrecos.$inferInsert;
 export const encomendas = mysqlTable("encomendas", {
   id: int("id").autoincrement().primaryKey(),
   // Product reference (null if custom product)
-  productId: int("productId"),
+  productId: int("productId").references(() => products.id, { onDelete: "set null" }),
   // Custom product fields (used when productId is null)
   nomeProduto: varchar("nomeProduto", { length: 255 }),
   medidaProduto: varchar("medidaProduto", { length: 100 }),
@@ -134,16 +149,42 @@ export const encomendas = mysqlTable("encomendas", {
   nomeCliente: varchar("nomeCliente", { length: 200 }).notNull(),
   telefoneCliente: varchar("telefoneCliente", { length: 20 }),
   dataCompra: timestamp("dataCompra"),
-  prazoEntregaDias: int("prazoEntregaDias"), // Prazo em dias úteis (alternativa a dataEntrega manual)
+  prazoEntregaDias: int("prazoEntregaDias"),
   dataEntrega: timestamp("dataEntrega").notNull(),
   pedidoFeito: boolean("pedidoFeito").default(false).notNull(),
-  status: mysqlEnum("status", ["pendente", "em_producao", "pronto", "entregue", "cancelado"]).default("pendente").notNull(),
+  status: mysqlEnum("status", ["pendente", "em_producao", "pronto", "entregue", "cancelado"])
+    .default("pendente")
+    .notNull(),
   observacoes: text("observacoes"),
   vendedor: varchar("vendedor", { length: 100 }),
-  userId: int("userId"),
+  userId: int("userId").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
 export type Encomenda = typeof encomendas.$inferSelect;
 export type InsertEncomenda = typeof encomendas.$inferInsert;
+
+/**
+ * Imported sales log table - prevents duplicate imports from external PDFs
+ */
+export const importedSalesLog = mysqlTable("imported_sales_log", {
+  id: int("id").autoincrement().primaryKey(),
+  fileHash: varchar("fileHash", { length: 128 }).notNull().unique(),
+  fileName: varchar("fileName", { length: 255 }).notNull(),
+  documentNumber: varchar("documentNumber", { length: 100 }),
+  nomeCliente: varchar("nomeCliente", { length: 200 }),
+  total: decimal("total", { precision: 12, scale: 2 }),
+  itemsCount: int("itemsCount").notNull().default(0),
+  userId: int("userId").references(() => users.id, { onDelete: "set null" }),
+  approvedByUserId: int("approvedByUserId").references(() => users.id, { onDelete: "set null" }),
+  approvedByEmail: varchar("approvedByEmail", { length: 320 }),
+  approvedAt: timestamp("approvedAt"),
+  status: mysqlEnum("status", ["success", "failed"]).default("success").notNull(),
+  notes: text("notes"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type ImportedSalesLog = typeof importedSalesLog.$inferSelect;
+export type InsertImportedSalesLog = typeof importedSalesLog.$inferInsert;

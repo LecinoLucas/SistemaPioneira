@@ -1,6 +1,7 @@
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { useState } from "react";
+import { useAccessControl } from "@/features/auth/hooks/useAccessControl";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -13,22 +14,38 @@ import { toast } from "sonner";
 import { useLocation } from "wouter";
 
 export default function Pricing() {
+  const PAGE_SIZE = 25;
   const { user } = useAuth();
+  const { canPerform } = useAccessControl();
+  const canManagePricing = canPerform("action:products.pricing");
   const [, setLocation] = useLocation();
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<any>(null);
+  const [currentPage, setCurrentPage] = useState(1);
   const [precoCusto, setPrecoCusto] = useState("");
   const [precoVenda, setPrecoVenda] = useState("");
 
   // Redirect if not admin
-  if (user && user.role !== "admin") {
-    setLocation("/");
+  useEffect(() => {
+    if (user && !canManagePricing) {
+      setLocation("/");
+    }
+  }, [user, canManagePricing, setLocation]);
+
+  if (user && !canManagePricing) {
     return null;
   }
 
-  const { data: products, isLoading, refetch } = trpc.products.list.useQuery({ page: 1, pageSize: 100 }, {
-    placeholderData: (prev) => prev,
-  });
+  const { data: products, isLoading, refetch } = trpc.products.list.useQuery(
+    { page: currentPage, pageSize: PAGE_SIZE },
+    {
+      placeholderData: (prev) => prev,
+      staleTime: 60_000,
+      refetchOnWindowFocus: false,
+    }
+  );
+  const totalProducts = products?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(totalProducts / PAGE_SIZE));
 
   const updatePriceMutation = trpc.products.updatePrice.useMutation({
     onSuccess: () => {
@@ -104,7 +121,10 @@ export default function Pricing() {
       <Card className="border-border shadow-sm">
         <CardHeader>
           <CardTitle>Tabela de Preços</CardTitle>
-          <CardDescription>Visualize e edite preços de custo, venda e margem de lucro</CardDescription>
+          <CardDescription>
+            Visualize e edite preços de custo, venda e margem de lucro
+            {products ? ` - Página ${currentPage} de ${totalPages}` : ""}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <Table>
@@ -172,6 +192,34 @@ export default function Pricing() {
               )}
             </TableBody>
           </Table>
+          {products && totalPages > 1 ? (
+            <div className="mt-4 flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">
+                Mostrando {((currentPage - 1) * PAGE_SIZE) + 1}
+                -
+                {Math.min(currentPage * PAGE_SIZE, totalProducts)}
+                {" "}de {totalProducts} produtos
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={currentPage <= 1}
+                  onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                >
+                  Anterior
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={currentPage >= totalPages}
+                  onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+                >
+                  Próxima
+                </Button>
+              </div>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 

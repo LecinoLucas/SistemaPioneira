@@ -1,9 +1,49 @@
 import { eq, desc, and, like, or, sql, SQL, isNotNull } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users, products, InsertProduct, movimentacoes, InsertMovimentacao, vendas, InsertVenda, historicoPrecos, encomendas, InsertEncomenda, marcas, InsertMarca } from "../drizzle/schema";
+import {
+  InsertUser,
+  users,
+  products,
+  InsertProduct,
+  movimentacoes,
+  InsertMovimentacao,
+  vendas,
+  InsertVenda,
+  historicoPrecos,
+  encomendas,
+  InsertEncomenda,
+  marcas,
+  InsertMarca,
+  userPermissions,
+  importedSalesLog,
+} from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
+let _userPermissionsTableEnsured = false;
+let _importedSalesTableEnsured = false;
+let _productsSalesColumnEnsured = false;
+
+async function ensureProductsSalesColumn(db: ReturnType<typeof drizzle>) {
+  if (_productsSalesColumnEnsured) return;
+
+  try {
+    await db.execute(
+      sql`ALTER TABLE products ADD COLUMN ativoParaVenda TINYINT(1) NOT NULL DEFAULT 1`
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    const isDuplicateColumn =
+      message.includes("duplicate column") ||
+      message.includes("already exists") ||
+      message.includes("1060");
+    if (!isDuplicateColumn) {
+      console.warn("[Database] Failed ensuring products.ativoParaVenda column:", error);
+    }
+  }
+
+  _productsSalesColumnEnsured = true;
+}
 
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
@@ -14,7 +54,63 @@ export async function getDb() {
       _db = null;
     }
   }
+  if (_db && !_productsSalesColumnEnsured) {
+    await ensureProductsSalesColumn(_db);
+  }
   return _db;
+}
+
+async function ensureUserPermissionsTable() {
+  const db = await getDb();
+  if (!db || _userPermissionsTableEnsured) return db;
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS user_permissions (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      userId INT NOT NULL,
+      permissionKey VARCHAR(191) NOT NULL,
+      allowed TINYINT(1) NOT NULL DEFAULT 1,
+      createdAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_user_permission (userId, permissionKey),
+      KEY idx_user_permissions_user (userId),
+      KEY idx_user_permissions_key (permissionKey)
+    )
+  `);
+
+  _userPermissionsTableEnsured = true;
+  return db;
+}
+
+async function ensureImportedSalesTable() {
+  const db = await getDb();
+  if (!db || _importedSalesTableEnsured) return db;
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS imported_sales_log (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      fileHash VARCHAR(128) NOT NULL,
+      fileName VARCHAR(255) NOT NULL,
+      documentNumber VARCHAR(100) NULL,
+      nomeCliente VARCHAR(200) NULL,
+      total DECIMAL(12,2) NULL,
+      itemsCount INT NOT NULL DEFAULT 0,
+      userId INT NULL,
+      approvedByUserId INT NULL,
+      approvedByEmail VARCHAR(320) NULL,
+      approvedAt TIMESTAMP NULL,
+      status ENUM('success','failed') NOT NULL DEFAULT 'success',
+      notes TEXT NULL,
+      createdAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_imported_sales_file_hash (fileHash),
+      KEY idx_imported_sales_document (documentNumber),
+      KEY idx_imported_sales_created (createdAt)
+    )
+  `);
+
+  _importedSalesTableEnsured = true;
+  return db;
 }
 
 // ============ User Functions ============
@@ -73,7 +169,9 @@ export async function upsertUser(user: InsertUser): Promise<void> {
       set: updateSet,
     });
   } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
+    if (process.env.NODE_ENV !== "test") {
+      console.error("[Database] Failed to upsert user:", error);
+    }
     throw error;
   }
 }
@@ -153,6 +251,9 @@ export async function updateUserRoleAndLoginMethodById(
 
   const updateData: Record<string, unknown> = {
     updatedAt: new Date(),
+    // Invalidates active sessions immediately when role/access changes.
+    // createContext compares sessionVersion with lastSignedIn.
+    lastSignedIn: new Date(),
   };
 
   if (data.role !== undefined) {
@@ -165,20 +266,248 @@ export async function updateUserRoleAndLoginMethodById(
   await db.update(users).set(updateData).where(eq(users.id, userId));
 }
 
+export type UserPermissionRecord = {
+  permissionKey: string;
+  allowed: boolean;
+};
+
+export async function listUserPermissionsByUserId(userId: number): Promise<UserPermissionRecord[]> {
+  const db = await ensureUserPermissionsTable();
+  if (!db) return [];
+
+  const rows = await db
+    .select({
+      permissionKey: userPermissions.permissionKey,
+      allowed: userPermissions.allowed,
+    })
+    .from(userPermissions)
+    .where(eq(userPermissions.userId, userId));
+
+  return rows.map((row) => ({
+    permissionKey: row.permissionKey,
+    allowed: Boolean(row.allowed),
+  }));
+}
+
+export async function replaceUserPermissions(
+  userId: number,
+  permissions: UserPermissionRecord[]
+): Promise<void> {
+  const db = await ensureUserPermissionsTable();
+  if (!db) return;
+
+  await db.delete(userPermissions).where(eq(userPermissions.userId, userId));
+  if (permissions.length === 0) return;
+
+  const deduped = Array.from(
+    permissions.reduce((acc, item) => acc.set(item.permissionKey, item.allowed), new Map<string, boolean>())
+  ).map(([permissionKey, allowed]) => ({ permissionKey, allowed }));
+
+  await db.insert(userPermissions).values(
+    deduped.map((permission) => ({
+      userId,
+      permissionKey: permission.permissionKey,
+      allowed: permission.allowed,
+    }))
+  );
+}
+
+export async function findImportedSaleByFileHashOrDocument(
+  fileHash: string,
+  documentNumber?: string | null
+) {
+  const db = await ensureImportedSalesTable();
+  if (!db) return undefined;
+
+  const normalizedDoc = documentNumber?.trim();
+  const whereClause = normalizedDoc
+    ? or(eq(importedSalesLog.fileHash, fileHash), eq(importedSalesLog.documentNumber, normalizedDoc))
+    : eq(importedSalesLog.fileHash, fileHash);
+
+  const result = await db
+    .select()
+    .from(importedSalesLog)
+    .where(whereClause)
+    .limit(1);
+
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function createImportedSaleLog(data: {
+  fileHash: string;
+  fileName: string;
+  documentNumber?: string | null;
+  nomeCliente?: string | null;
+  total?: number | null;
+  itemsCount: number;
+  userId: number | null;
+  approvedByUserId?: number | null;
+  approvedByEmail?: string | null;
+  approvedAt?: Date | null;
+  status?: "success" | "failed";
+  notes?: string | null;
+}) {
+  const db = await ensureImportedSalesTable();
+  if (!db) throw new Error("Database not available");
+
+  await db.insert(importedSalesLog).values({
+    fileHash: data.fileHash,
+    fileName: data.fileName,
+    documentNumber: data.documentNumber ?? null,
+    nomeCliente: data.nomeCliente ?? null,
+    total: data.total != null ? data.total.toFixed(2) : null,
+    itemsCount: data.itemsCount,
+    userId: data.userId,
+    approvedByUserId: data.approvedByUserId ?? null,
+    approvedByEmail: data.approvedByEmail ?? null,
+    approvedAt: data.approvedAt ?? null,
+    status: data.status ?? "success",
+    notes: data.notes ?? null,
+  });
+}
+
+export async function listImportedSalesLogs(input?: {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+}) {
+  const db = await ensureImportedSalesTable();
+  if (!db) {
+    return { items: [], total: 0, totalPages: 0 };
+  }
+
+  const page = Math.max(1, input?.page ?? 1);
+  const pageSize = Math.max(1, Math.min(input?.pageSize ?? 20, 100));
+  const offset = (page - 1) * pageSize;
+  const search = input?.search?.trim();
+
+  const conditions: SQL[] = [];
+  if (search) {
+    conditions.push(
+      or(
+        sql`${importedSalesLog.fileName} LIKE ${`%${search}%`}`,
+        sql`${importedSalesLog.documentNumber} LIKE ${`%${search}%`}`,
+        sql`${importedSalesLog.nomeCliente} LIKE ${`%${search}%`}`
+      ) as SQL
+    );
+  }
+
+  const countRows = conditions.length
+    ? await db
+        .select({ count: sql<number>`COUNT(*)` })
+        .from(importedSalesLog)
+        .where(and(...conditions))
+    : await db.select({ count: sql<number>`COUNT(*)` }).from(importedSalesLog);
+  const total = Number(countRows[0]?.count ?? 0);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  const items = conditions.length
+    ? await db
+        .select()
+        .from(importedSalesLog)
+        .where(and(...conditions))
+        .orderBy(desc(importedSalesLog.createdAt))
+        .limit(pageSize)
+        .offset(offset)
+    : await db
+        .select()
+        .from(importedSalesLog)
+        .orderBy(desc(importedSalesLog.createdAt))
+        .limit(pageSize)
+        .offset(offset);
+
+  return { items, total, totalPages };
+}
+
 // ============ Product Functions ============
 
-export async function getAllProducts(limit?: number, offset?: number) {
+export async function getAllProducts(limit?: number, offset?: number, onlyActiveForSales?: boolean) {
   const db = await getDb();
   if (!db) return { items: [], total: 0 };
+
+  const whereClause = onlyActiveForSales ? eq(products.ativoParaVenda, true) : undefined;
   
   const [items, countResult] = await Promise.all([
-    limit !== undefined
-      ? db.select().from(products).orderBy(products.name).limit(limit).offset(offset ?? 0)
-      : db.select().from(products).orderBy(products.name),
-    db.select({ count: sql<number>`count(*)` }).from(products),
+    whereClause
+      ? limit !== undefined
+        ? db.select().from(products).where(whereClause).orderBy(products.name).limit(limit).offset(offset ?? 0)
+        : db.select().from(products).where(whereClause).orderBy(products.name)
+      : limit !== undefined
+        ? db.select().from(products).orderBy(products.name).limit(limit).offset(offset ?? 0)
+        : db.select().from(products).orderBy(products.name),
+    whereClause
+      ? db.select({ count: sql<number>`count(*)` }).from(products).where(whereClause)
+      : db.select({ count: sql<number>`count(*)` }).from(products),
   ]);
   
   return { items, total: Number(countResult[0]?.count ?? 0) };
+}
+
+/**
+ * Returns products ranked by recent sales relevance to improve product picker UX.
+ * Ranking priority:
+ * 1) weighted sold quantity in last 30 days (x3)
+ * 2) sold quantity in last 90 days (x1)
+ * 3) most recently sold
+ * 4) alphabetical fallback
+ */
+export async function getSmartProducts(limit?: number, offset?: number, onlyActiveForSales?: boolean) {
+  const db = await getDb();
+  if (!db) return { items: [], total: 0 };
+
+  const salesAgg = db
+    .select({
+      productId: vendas.productId,
+      score: sql<number>`
+        COALESCE(
+          SUM(
+            CASE
+              WHEN ${vendas.dataVenda} >= DATE_SUB(NOW(), INTERVAL 30 DAY) THEN ${vendas.quantidade} * 3
+              WHEN ${vendas.dataVenda} >= DATE_SUB(NOW(), INTERVAL 90 DAY) THEN ${vendas.quantidade}
+              ELSE 0
+            END
+          ),
+          0
+        )
+      `.as("score"),
+      lastSoldAt: sql<Date | null>`MAX(${vendas.dataVenda})`.as("lastSoldAt"),
+    })
+    .from(vendas)
+    .where(eq(vendas.status, "concluida"))
+    .groupBy(vendas.productId)
+    .as("sales_agg");
+
+  const queryBase = db
+    .select({
+      product: products,
+      salesScore: sql<number>`COALESCE(${salesAgg.score}, 0)`,
+      lastSoldAt: salesAgg.lastSoldAt,
+    })
+    .from(products)
+    .leftJoin(salesAgg, eq(products.id, salesAgg.productId));
+
+  const query = onlyActiveForSales
+    ? queryBase.where(eq(products.ativoParaVenda, true))
+    : queryBase;
+
+  const orderedQuery = query
+    .orderBy(
+      desc(sql`COALESCE(${salesAgg.score}, 0)`),
+      desc(sql`COALESCE(${salesAgg.lastSoldAt}, '1970-01-01 00:00:00')`),
+      products.name
+    );
+
+  const [rows, countResult] = await Promise.all([
+    limit !== undefined ? orderedQuery.limit(limit).offset(offset ?? 0) : orderedQuery,
+    onlyActiveForSales
+      ? db.select({ count: sql<number>`count(*)` }).from(products).where(eq(products.ativoParaVenda, true))
+      : db.select({ count: sql<number>`count(*)` }).from(products),
+  ]);
+
+  return {
+    items: rows.map((row) => row.product),
+    total: Number(countResult[0]?.count ?? 0),
+  };
 }
 
 export async function getProductById(id: number) {
@@ -189,7 +518,15 @@ export async function getProductById(id: number) {
   return result.length > 0 ? result[0] : undefined;
 }
 
-export async function searchProducts(searchTerm?: string, medida?: string, categoria?: string, marca?: string, limit?: number, offset?: number) {
+export async function searchProducts(
+  searchTerm?: string,
+  medida?: string,
+  categoria?: string,
+  marca?: string,
+  limit?: number,
+  offset?: number,
+  onlyActiveForSales?: boolean
+) {
   const db = await getDb();
   if (!db) return { items: [], total: 0 };
   
@@ -210,9 +547,13 @@ export async function searchProducts(searchTerm?: string, medida?: string, categ
   if (marca) {
     conditions.push(eq(products.marca, marca));
   }
+
+  if (onlyActiveForSales) {
+    conditions.push(eq(products.ativoParaVenda, true));
+  }
   
   if (conditions.length === 0) {
-    return await getAllProducts(limit, offset);
+    return await getAllProducts(limit, offset, onlyActiveForSales);
   }
   
   const whereClause = and(...conditions);
@@ -316,16 +657,6 @@ export async function deleteProduct(id: number) {
       throw new Error("Não é possível excluir produto com vendas relacionadas");
     }
 
-    const [movimentacaoRelacionada] = await tx
-      .select({ id: movimentacoes.id })
-      .from(movimentacoes)
-      .where(eq(movimentacoes.productId, id))
-      .limit(1);
-
-    if (movimentacaoRelacionada) {
-      throw new Error("Não é possível excluir produto com movimentações relacionadas");
-    }
-
     const [encomendaRelacionada] = await tx
       .select({ id: encomendas.id })
       .from(encomendas)
@@ -335,6 +666,11 @@ export async function deleteProduct(id: number) {
     if (encomendaRelacionada) {
       throw new Error("Não é possível excluir produto com encomendas relacionadas");
     }
+
+    // Safe cleanup for entities that only reference product history/metadata.
+    // Sales and orders remain protected by guards above.
+    await tx.delete(movimentacoes).where(eq(movimentacoes.productId, id));
+    await tx.delete(historicoPrecos).where(eq(historicoPrecos.productId, id));
 
     await tx.delete(products).where(eq(products.id, id));
   });
@@ -349,18 +685,45 @@ export async function createMovimentacao(movimentacao: InsertMovimentacao) {
   await db.insert(movimentacoes).values(movimentacao);
 }
 
-export async function getMovimentacoesByProduct(productId: number) {
+export async function getMovimentacoesByProduct(
+  productId: number,
+  limit = 100,
+  offset = 0
+) {
   const db = await getDb();
   if (!db) return [];
-  
-  return await db.select().from(movimentacoes).where(eq(movimentacoes.productId, productId)).orderBy(desc(movimentacoes.createdAt));
+
+  return await db
+    .select()
+    .from(movimentacoes)
+    .where(eq(movimentacoes.productId, productId))
+    .orderBy(desc(movimentacoes.createdAt))
+    .limit(limit)
+    .offset(offset);
 }
 
-export async function getAllMovimentacoes() {
+export async function getAllMovimentacoes(limit = 100, offset = 0) {
   const db = await getDb();
   if (!db) return [];
-  
-  return await db.select().from(movimentacoes).orderBy(desc(movimentacoes.createdAt)).limit(100);
+
+  return await db
+    .select({
+      id: movimentacoes.id,
+      productId: movimentacoes.productId,
+      tipo: movimentacoes.tipo,
+      quantidade: movimentacoes.quantidade,
+      quantidadeAnterior: movimentacoes.quantidadeAnterior,
+      quantidadeNova: movimentacoes.quantidadeNova,
+      observacao: movimentacoes.observacao,
+      createdAt: movimentacoes.createdAt,
+      productName: products.name,
+      productMedida: products.medida,
+    })
+    .from(movimentacoes)
+    .leftJoin(products, eq(movimentacoes.productId, products.id))
+    .orderBy(desc(movimentacoes.createdAt))
+    .limit(limit)
+    .offset(offset);
 }
 
 // ============ Venda Functions ============
@@ -411,6 +774,10 @@ export async function registrarVendasAtomico(data: {
 
       if (!product) {
         throw new Error(`Product ${item.productId} not found`);
+      }
+
+      if (!product.ativoParaVenda) {
+        throw new Error(`O produto "${product.name}" está inativo para novas vendas.`);
       }
 
       const novaQuantidade = product.quantidade - item.quantidade;

@@ -21,8 +21,20 @@ export function useAuth(options?: UseAuthOptions) {
   const utils = trpc.useUtils();
 
   const meQuery = trpc.auth.me.useQuery(undefined, {
-    retry: false,
-    refetchOnWindowFocus: false,
+    staleTime: 0,
+    retry: (failureCount, error) => {
+      if (failureCount >= 1) return false;
+      if (error instanceof TRPCClientError) {
+        const code = error.data?.code;
+        if (code === "UNAUTHORIZED" || code === "FORBIDDEN") return false;
+        if (error.message?.toLowerCase().includes("failed to fetch")) return true;
+      }
+      return false;
+    },
+    retryDelay: 1000,
+    refetchOnWindowFocus: true,
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: true,
   });
 
   const logoutMutation = trpc.auth.logout.useMutation({
@@ -71,6 +83,16 @@ export function useAuth(options?: UseAuthOptions) {
       isAuthenticated: Boolean(currentUser),
     };
   }, [meQuery.data, meQuery.isLoading, meQuery.error, logoutMutation.isPending, logoutMutation.error]);
+
+  useEffect(() => {
+    if (!meQuery.error) return;
+    if (!(meQuery.error instanceof TRPCClientError)) return;
+    const code = meQuery.error.data?.code;
+    const httpStatus = meQuery.error.data?.httpStatus;
+    if (code === "UNAUTHORIZED" || code === "FORBIDDEN" || httpStatus === 401 || httpStatus === 403) {
+      utils.auth.me.setData(undefined, null);
+    }
+  }, [meQuery.error, utils]);
 
   useEffect(() => {
     if (!redirectOnUnauthenticated || state.loading) return;

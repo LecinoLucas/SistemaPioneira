@@ -1,5 +1,5 @@
 import { drizzle } from "drizzle-orm/mysql2";
-import { products } from "./drizzle/schema.js";
+import { products } from "../../drizzle/schema.js";
 
 const db = drizzle(process.env.DATABASE_URL);
 

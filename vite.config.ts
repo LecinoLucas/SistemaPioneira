@@ -23,16 +23,55 @@ export default defineConfig({
     emptyOutDir: true,
     rollupOptions: {
       output: {
-        manualChunks: {
-          "react-vendor": ["react", "react-dom"],
-          "trpc-vendor": ["@trpc/client", "@trpc/react-query", "@tanstack/react-query"],
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+
+          if (
+            id.includes("/node_modules/react/") ||
+            id.includes("/node_modules/react-dom/") ||
+            id.includes("/node_modules/scheduler/")
+          ) {
+            return "react-vendor";
+          }
+
+          if (
+            id.includes("@trpc/") ||
+            id.includes("@tanstack/react-query")
+          ) {
+            return "trpc-vendor";
+          }
+
+          if (
+            id.includes("@radix-ui/") ||
+            id.includes("lucide-react")
+          ) {
+            return "ui-vendor";
+          }
+
+          if (id.includes("/recharts/")) {
+            return "charts-vendor";
+          }
+
+          if (id.includes("/jspdf/") || id.includes("jspdf-autotable")) {
+            return "pdf-vendor";
+          }
+
+          if (id.includes("/xlsx/")) {
+            return "xlsx-vendor";
+          }
+
+          if (id.includes("/date-fns/")) {
+            return "date-vendor";
+          }
+
+          return undefined;
         },
       },
     },
   },
   server: {
     host: true,
-    port: 5173,
+    port: Number(process.env.FRONTEND_PORT || process.env.PORT || 5173),
     allowedHosts: ["localhost", "127.0.0.1"],
     fs: {
       strict: true,

@@ -18,9 +18,10 @@ import {
 
 export default function OrdersReport() {
   const [nomeCliente, setNomeCliente] = useState("");
+  const [appliedNomeCliente, setAppliedNomeCliente] = useState("");
 
-  const { data: encomendas, isLoading, refetch } = trpc.vendas.relatorioEncomendas.useQuery({
-    nomeCliente: nomeCliente || undefined,
+  const { data: encomendas, isLoading } = trpc.vendas.relatorioEncomendas.useQuery({
+    nomeCliente: appliedNomeCliente || undefined,
   });
 
   const exportPdfMutation = trpc.vendas.exportarEncomendasPdf.useMutation({
@@ -58,18 +59,18 @@ export default function OrdersReport() {
   });
 
   const handleFilter = () => {
-    refetch();
+    setAppliedNomeCliente(nomeCliente);
   };
 
   const handleExportPdf = () => {
     exportPdfMutation.mutate({
-      nomeCliente: nomeCliente || undefined,
+      nomeCliente: appliedNomeCliente || undefined,
     });
   };
 
   const handleExportExcel = () => {
     exportExcelMutation.mutate({
-      nomeCliente: nomeCliente || undefined,
+      nomeCliente: appliedNomeCliente || undefined,
     });
   };
 

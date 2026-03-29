@@ -3,9 +3,11 @@ import * as db from "../db";
 import type { User } from "../../drizzle/schema";
 import { getSessionCookieOptions } from "./cookies";
 import { createSessionToken, SESSION_COOKIE_NAME } from "./session";
+import { ENV } from "./env";
 import {
   isApprovedLoginMethod,
   isRejectedLoginMethod,
+  LOGIN_METHOD_GOOGLE,
   LOGIN_METHOD_GOOGLE_PENDING,
   LOGIN_METHOD_LOCAL,
 } from "./userGovernance";
@@ -19,6 +21,7 @@ export async function resolveGoogleAccess(identity: {
   email: string;
   name: string;
 }): Promise<{ status: AccessStatus; user?: AuthUser }> {
+  const isOwner = Boolean(ENV.ownerOpenId) && identity.sub === ENV.ownerOpenId;
   let user = await db.getUserByOpenId(identity.sub);
 
   if (!user) {
@@ -26,12 +29,29 @@ export async function resolveGoogleAccess(identity: {
       openId: identity.sub,
       name: identity.name,
       email: identity.email,
-      loginMethod: LOGIN_METHOD_GOOGLE_PENDING,
-      role: "user",
+      loginMethod: isOwner ? LOGIN_METHOD_GOOGLE : LOGIN_METHOD_GOOGLE_PENDING,
+      role: isOwner ? "admin" : "user",
       lastSignedIn: new Date(),
     });
-    return { status: "pending" };
+    if (!isOwner) {
+      return { status: "pending" };
+    }
+    user = await db.getUserByOpenId(identity.sub);
   }
+
+  if (isOwner && user && (user.role !== "admin" || user.loginMethod !== LOGIN_METHOD_GOOGLE)) {
+    await db.upsertUser({
+      openId: identity.sub,
+      name: identity.name,
+      email: identity.email,
+      loginMethod: LOGIN_METHOD_GOOGLE,
+      role: "admin",
+      lastSignedIn: new Date(),
+    });
+    user = await db.getUserByOpenId(identity.sub);
+  }
+
+  if (!user) return { status: "pending" };
 
   if (isRejectedLoginMethod(user.loginMethod)) {
     return { status: "rejected" };
@@ -69,12 +89,10 @@ export async function issueSessionForUser(
     lastSignedIn: now,
   });
 
-  let sessionVersion = Math.floor(now.getTime() / 1000);
+  let sessionVersion = now.getTime();
   try {
     const persisted = await db.getUserByOpenId(user.openId);
-    sessionVersion = Math.floor(
-      new Date(persisted?.lastSignedIn ?? now).getTime() / 1000
-    );
+    sessionVersion = new Date(persisted?.lastSignedIn ?? now).getTime();
   } catch {
     // Fail-soft fallback to current timestamp version.
   }

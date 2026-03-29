@@ -20,8 +20,10 @@ export default function History() {
   const isAdmin = user?.role === "admin" || user?.role === "gerente";
   
   // Movimentações
-  const { data: movimentacoes, isLoading: loadingMovimentacoes } = trpc.movimentacoes.list.useQuery();
-  const { data: products } = trpc.products.list.useQuery({ page: 1, pageSize: 100 });
+  const { data: movimentacoes, isLoading: loadingMovimentacoes } = trpc.movimentacoes.list.useQuery(undefined, {
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
 
   // Vendas paginadas
   const [currentPage, setCurrentPage] = useState(1);
@@ -30,6 +32,9 @@ export default function History() {
     page: currentPage, 
     limit: 20,
     tipoTransacao: filterTipo === "todos" ? undefined : filterTipo
+  }, {
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
   
   // Cancelamento
@@ -79,11 +84,6 @@ export default function History() {
       toast.error(error.message || "Erro ao editar venda");
     },
   });
-
-  const getProductName = (productId: number) => {
-    const product = products?.items?.find(p => p.id === productId);
-    return product ? `${product.name} (${product.medida})` : `Produto #${productId}`;
-  };
 
   const handleCancelar = () => {
     if (!cancelingVenda || !motivoCancelamento.trim()) {
@@ -347,7 +347,9 @@ export default function History() {
                           <TableCell className="font-medium">
                             {format(new Date(mov.createdAt), "dd/MM/yyyy HH:mm", { locale: ptBR })}
                           </TableCell>
-                          <TableCell>{getProductName(mov.productId)}</TableCell>
+                          <TableCell>
+                            {mov.productName ? `${mov.productName}${mov.productMedida ? ` (${mov.productMedida})` : ""}` : `Produto #${mov.productId}`}
+                          </TableCell>
                           <TableCell>
                             {mov.tipo === "entrada" ? (
                               <Badge variant="default" className="gap-1 bg-green-600 hover:bg-green-700">

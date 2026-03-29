@@ -1,5 +1,6 @@
-import { canAccessPath } from "@/features/auth/access/roleAccess";
+import { SCREEN_CATALOG, type ScreenPath } from "@shared/access-governance";
 import { useAuth } from "@/features/auth/hooks/useAuth";
+import { useAccessControl } from "@/features/auth/hooks/useAccessControl";
 import { BrandLogo } from "@/components/BrandLogo";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
@@ -22,27 +23,36 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { useIsMobile } from "@/hooks/useMobile";
-import { LayoutDashboard, LogOut, PanelLeft, Package, ShoppingCart, History, DollarSign, FileText, PackageX, TrendingUp, Tag, UserCheck, ShieldCheck } from "lucide-react";
+import { LayoutDashboard, LogOut, PanelLeft, Package, ShoppingCart, History, DollarSign, FileText, PackageX, TrendingUp, Tag, UserCheck, ShieldCheck, Blocks } from "lucide-react";
 import { CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from './DashboardLayoutSkeleton';
 
-const getMenuItems = (userRole?: string) => [
-  { icon: LayoutDashboard, label: "Dashboard", path: "/" },
-  { icon: ShoppingCart, label: "Vendas", path: "/vendas" },
-  { icon: History, label: "Histórico", path: "/historico" },
-  { icon: Package, label: "Produtos", path: "/produtos" },
-  { icon: DollarSign, label: "Preços", path: "/precos" },
-  { icon: FileText, label: "Relatório de Vendas", path: "/relatorio-vendas" },
-  { icon: PackageX, label: "Relatório de Encomendas", path: "/relatorio-encomendas" },
-  { icon: TrendingUp, label: "Rankings", path: "/rankings" },
-  ...(userRole === "admin" ? [
-    { icon: DollarSign, label: "Preços e Margens", path: "/precos-margens" },
-    { icon: Tag, label: "Marcas", path: "/marcas" },
-    { icon: UserCheck, label: "Usuários Pendentes", path: "/usuarios-pendentes" },
-    { icon: ShieldCheck, label: "Auditoria", path: "/auditoria" },
-  ] : []),
-].filter(item => canAccessPath(userRole, item.path));
+const iconByPath: Record<ScreenPath, typeof LayoutDashboard> = {
+  "/": LayoutDashboard,
+  "/vendas": ShoppingCart,
+  "/historico": History,
+  "/produtos": Package,
+  "/precos": DollarSign,
+  "/relatorio-vendas": FileText,
+  "/relatorio-encomendas": PackageX,
+  "/rankings": TrendingUp,
+  "/precos-margens": DollarSign,
+  "/marcas": Tag,
+  "/usuarios-pendentes": UserCheck,
+  "/auditoria": ShieldCheck,
+  "/componentes": Blocks,
+};
+
+const getMenuItems = (canAccessPath: (path: ScreenPath) => boolean) =>
+  SCREEN_CATALOG
+    .filter((screen) => canAccessPath(screen.path))
+    .filter((screen) => !["/relatorio-encomendas", "/rankings"].includes(screen.path))
+    .map((screen) => ({
+      icon: iconByPath[screen.path],
+      label: screen.path === "/relatorio-vendas" ? "Relatórios" : screen.label,
+      path: screen.path,
+    }));
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
 const DEFAULT_WIDTH = 280;
@@ -71,6 +81,7 @@ export default function DashboardLayout({
     }
   });
   const { loading, user, logout } = useAuth();
+  const { canAccessPath } = useAccessControl();
 
   useEffect(() => {
     try {
@@ -108,6 +119,7 @@ export default function DashboardLayout({
         setSidebarWidth={setSidebarWidth}
         user={user}
         logout={logout}
+        canAccessPath={canAccessPath}
       >
         {children}
       </DashboardLayoutContent>
@@ -120,6 +132,7 @@ type DashboardLayoutContentProps = {
   setSidebarWidth: (width: number) => void;
   user: NonNullable<ReturnType<typeof useAuth>["user"]>;
   logout: ReturnType<typeof useAuth>["logout"];
+  canAccessPath: (path: ScreenPath) => boolean;
 };
 
 function DashboardLayoutContent({
@@ -127,13 +140,14 @@ function DashboardLayoutContent({
   setSidebarWidth,
   user,
   logout,
+  canAccessPath,
 }: DashboardLayoutContentProps) {
   const [location, setLocation] = useLocation();
   const { state, toggleSidebar } = useSidebar();
   const isCollapsed = state === "collapsed";
   const [isResizing, setIsResizing] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
-  const menuItems = useMemo(() => getMenuItems(user?.role), [user?.role]);
+  const menuItems = useMemo(() => getMenuItems(canAccessPath), [canAccessPath]);
   const activeMenuItem = useMemo(() => menuItems.find(item => item.path === location), [menuItems, location]);
   const isMobile = useIsMobile();
 

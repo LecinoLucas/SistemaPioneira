@@ -34,6 +34,11 @@ export const ENV = {
   googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
   googleRedirectUri:
     process.env.GOOGLE_REDIRECT_URI ?? "http://localhost:3001/auth/google/callback",
+  salesImportDir: process.env.SALES_IMPORT_DIR ?? "",
+  // Demo user passwords — only relevant in local/development mode.
+  demoAdminPassword: process.env.DEMO_ADMIN_PASSWORD ?? "",
+  demoGerentePassword: process.env.DEMO_GERENTE_PASSWORD ?? "",
+  demoUserPassword: process.env.DEMO_USER_PASSWORD ?? "",
 };
 
 export function validateEnvironment() {

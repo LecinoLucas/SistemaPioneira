@@ -169,9 +169,13 @@ import {
   Sun,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { toast as sonnerToast } from "sonner";
-import { AIChatBox, type Message } from "@/components/AIChatBox";
+import type { Message } from "@/components/AIChatBox";
+
+const AIChatBox = lazy(() =>
+  import("@/components/AIChatBox").then(module => ({ default: module.AIChatBox }))
+);
 
 export default function ComponentsShowcase() {
   const { theme, toggleTheme } = useTheme();
@@ -1406,20 +1410,26 @@ export default function ComponentsShowcase() {
                       This is a demo with simulated responses. In a real app, you'd connect it to a tRPC mutation.
                     </p>
                   </div>
-                  <AIChatBox
-                    messages={chatMessages}
-                    onSendMessage={handleChatSend}
-                    isLoading={isChatLoading}
-                    placeholder="Try sending a message..."
-                    height="500px"
-                    emptyStateMessage="How can I help you today?"
-                    suggestedPrompts={[
-                      "What is React?",
-                      "Explain TypeScript",
-                      "How to use tRPC?",
-                      "Best practices for web development",
-                    ]}
-                  />
+                  <Suspense
+                    fallback={
+                      <div className="h-[500px] rounded-lg border border-border bg-muted/20 animate-pulse" />
+                    }
+                  >
+                    <AIChatBox
+                      messages={chatMessages}
+                      onSendMessage={handleChatSend}
+                      isLoading={isChatLoading}
+                      placeholder="Try sending a message..."
+                      height="500px"
+                      emptyStateMessage="How can I help you today?"
+                      suggestedPrompts={[
+                        "What is React?",
+                        "Explain TypeScript",
+                        "How to use tRPC?",
+                        "Best practices for web development",
+                      ]}
+                    />
+                  </Suspense>
                 </div>
               </CardContent>
             </Card>

@@ -1,10 +1,12 @@
-import { AUTH_RATE_LIMIT_SCOPE } from "@shared/auth-governance";
+import { AUTH_AUDIT_ACTION, AUTH_RATE_LIMIT_SCOPE } from "@shared/auth-governance";
 import type { TrpcContext } from "../../../../_core/context";
+import * as db from "../../../../db";
 import {
   adminProcedure,
   protectedProcedure,
   publicProcedure,
   router,
+  withActionPermission,
   withRateLimit,
 } from "../../../../_core/trpc";
 import { DrizzleUserRepository } from "../../../users/infrastructure/repositories/drizzle-user.repository";
@@ -19,6 +21,7 @@ import {
   rateLimitClearSchema,
   rateLimitStatsSchema,
   stockAnomaliesSchema,
+  updateUserPermissionsSchema,
   userIdSchema,
 } from "./auth.schemas";
 import { toTrpcError } from "../../../shared/utils/trpc-error";
@@ -102,6 +105,7 @@ export const authRouter = router({
   }),
 
   approveUser: adminProcedure
+    .use(withActionPermission("action:users.approve"))
     .use(withRateLimit({ scope: AUTH_RATE_LIMIT_SCOPE.APPROVE_USER, max: 60, windowMs: 60 * 1000 }))
     .input(userIdSchema)
     .mutation(async ({ ctx, input }) => {
@@ -113,6 +117,7 @@ export const authRouter = router({
     }),
 
   promoteUserToAdmin: adminProcedure
+    .use(withActionPermission("action:users.promote"))
     .use(withRateLimit({ scope: AUTH_RATE_LIMIT_SCOPE.PROMOTE_USER_ADMIN, max: 30, windowMs: 60 * 1000 }))
     .input(userIdSchema)
     .mutation(async ({ ctx, input }) => {
@@ -124,6 +129,7 @@ export const authRouter = router({
     }),
 
   inactivateUserToPending: adminProcedure
+    .use(withActionPermission("action:users.promote"))
     .use(withRateLimit({ scope: AUTH_RATE_LIMIT_SCOPE.INACTIVATE_USER_PENDING, max: 30, windowMs: 60 * 1000 }))
     .input(userIdSchema)
     .mutation(async ({ ctx, input }) => {
@@ -135,6 +141,7 @@ export const authRouter = router({
     }),
 
   rejectUser: adminProcedure
+    .use(withActionPermission("action:users.approve"))
     .use(withRateLimit({ scope: AUTH_RATE_LIMIT_SCOPE.REJECT_USER, max: 60, windowMs: 60 * 1000 }))
     .input(userIdSchema)
     .mutation(async ({ ctx, input }) => {
@@ -145,7 +152,7 @@ export const authRouter = router({
       }
     }),
 
-  auditEvents: adminProcedure.input(auditFilterSchema).query(async ({ input }) => {
+  auditEvents: adminProcedure.use(withActionPermission("action:audit.view")).input(auditFilterSchema).query(async ({ input }) => {
     try {
       return await auditService.listEvents(input);
     } catch (error) {
@@ -154,6 +161,7 @@ export const authRouter = router({
   }),
 
   auditExportCsv: adminProcedure
+    .use(withActionPermission("action:audit.export"))
     .use(withRateLimit({ scope: AUTH_RATE_LIMIT_SCOPE.AUDIT_EXPORT_CSV, max: 10, windowMs: 60 * 1000 }))
     .input(auditExportSchema)
     .mutation(async ({ input }) => {
@@ -183,7 +191,7 @@ export const authRouter = router({
       }
     }),
 
-  stockAnomalies: adminProcedure.input(stockAnomaliesSchema).query(async ({ input }) => {
+  stockAnomalies: adminProcedure.use(withActionPermission("action:audit.view")).input(stockAnomaliesSchema).query(async ({ input }) => {
     try {
       return await auditService.stockAnomalies(input);
     } catch (error) {
@@ -191,11 +199,82 @@ export const authRouter = router({
     }
   }),
 
-  auditStorageStats: adminProcedure.query(async () => {
+  auditStorageStats: adminProcedure.use(withActionPermission("action:audit.view")).query(async () => {
     try {
       return await auditService.storageStats();
     } catch (error) {
       throw toTrpcError(error);
     }
   }),
+
+  myPermissions: protectedProcedure.query(async ({ ctx }) => {
+    try {
+      return await db.listUserPermissionsByUserId(ctx.user.id);
+    } catch (error) {
+      throw toTrpcError(error);
+    }
+  }),
+
+  userPermissions: adminProcedure.input(userIdSchema).query(async ({ input }) => {
+    try {
+      return await db.listUserPermissionsByUserId(input.userId);
+    } catch (error) {
+      throw toTrpcError(error);
+    }
+  }),
+
+  setUserPermissions: adminProcedure
+    .use(withActionPermission("action:users.permissions"))
+    .use(
+      withRateLimit({
+        scope: AUTH_RATE_LIMIT_SCOPE.UPDATE_USER_PERMISSIONS,
+        max: 40,
+        windowMs: 60 * 1000,
+      })
+    )
+    .input(updateUserPermissionsSchema)
+    .mutation(async ({ ctx, input }) => {
+      try {
+        const target = await userRepository.findById(input.userId);
+        if (!target) {
+          throw new Error("Usuário não encontrado.");
+        }
+
+        const beforePermissions = await db.listUserPermissionsByUserId(input.userId);
+        const beforeMap = new Map(beforePermissions.map((item) => [item.permissionKey, item.allowed]));
+        const afterMap = new Map(input.permissions.map((item) => [item.permissionKey, item.allowed]));
+        const diffKeys = Array.from(
+          new Set([...Array.from(beforeMap.keys()), ...Array.from(afterMap.keys())])
+        );
+        const changedPermissions = diffKeys
+          .filter((key) => beforeMap.get(key) !== afterMap.get(key))
+          .map((key) => ({
+            permissionKey: key,
+            before: beforeMap.get(key) ?? null,
+            after: afterMap.get(key) ?? null,
+          }));
+
+        await db.replaceUserPermissions(input.userId, input.permissions);
+        await auditGateway.write({
+          action: AUTH_AUDIT_ACTION.UPDATE_USER_PERMISSIONS,
+          actor: adminActorFromCtx(ctx),
+          target: {
+            userId: target.id,
+            targetEmail: target.email,
+            targetOpenId: target.openId,
+          },
+          metadata: {
+            totalPermissions: input.permissions.length,
+            beforeCount: beforePermissions.length,
+            afterCount: input.permissions.length,
+            changedCount: changedPermissions.length,
+            changedPermissions: changedPermissions.slice(0, 120),
+          },
+        });
+
+        return { success: true, totalPermissions: input.permissions.length } as const;
+      } catch (error) {
+        throw toTrpcError(error);
+      }
+    }),
 });

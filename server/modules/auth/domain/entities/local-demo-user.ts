@@ -1,3 +1,4 @@
+import { ENV } from "../../../../_core/env";
 import type { UserRole } from "../../../shared/types/user-role";
 
 export type LocalDemoUser = {
@@ -9,6 +10,14 @@ export type LocalDemoUser = {
   password: string;
 };
 
+/**
+ * Demo users for local development.
+ *
+ * Passwords are read from environment variables so they are never hardcoded
+ * in source control. Fallback values exist only as a convenience for first-run
+ * local dev and MUST NOT be used in production — production should rely on
+ * Google OAuth exclusively.
+ */
 export const DEMO_USERS: readonly LocalDemoUser[] = [
   {
     id: 1,
@@ -16,7 +25,7 @@ export const DEMO_USERS: readonly LocalDemoUser[] = [
     name: "Administrador",
     email: "admin@pioneira.local",
     role: "admin",
-    password: "admin123",
+    password: ENV.demoAdminPassword || "admin123",
   },
   {
     id: 2,
@@ -24,7 +33,7 @@ export const DEMO_USERS: readonly LocalDemoUser[] = [
     name: "Gerente",
     email: "gerente@pioneira.local",
     role: "gerente",
-    password: "gerente123",
+    password: ENV.demoGerentePassword || "gerente123",
   },
   {
     id: 3,
@@ -32,6 +41,6 @@ export const DEMO_USERS: readonly LocalDemoUser[] = [
     name: "Usuário",
     email: "usuario@pioneira.local",
     role: "user",
-    password: "user123",
+    password: ENV.demoUserPassword || "user123",
   },
 ] as const;

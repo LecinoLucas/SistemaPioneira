@@ -3,11 +3,11 @@ import { parse as parseCookie } from "cookie";
 import type { User } from "../../drizzle/schema";
 import { getUserByOpenId } from "../db";
 import { getSessionCookieOptions } from "./cookies";
+import { isApprovedLoginMethod } from "./userGovernance";
 import {
   createSessionToken,
   readSessionToken,
   SESSION_COOKIE_NAME,
-  sessionPayloadToUser,
   shouldRotateSession,
 } from "./session";
 
@@ -56,7 +56,7 @@ export async function createContext(
     persistedUser = undefined;
   }
   if (persistedUser?.lastSignedIn) {
-    const persistedVersion = Math.floor(new Date(persistedUser.lastSignedIn).getTime() / 1000);
+    const persistedVersion = new Date(persistedUser.lastSignedIn).getTime();
     if (persistedVersion !== payload.sessionVersion) {
       opts.res.clearCookie(SESSION_COOKIE_NAME, getSessionCookieOptions(opts.req));
       return {
@@ -67,25 +67,47 @@ export async function createContext(
     }
   }
 
+  // Access governance check: if user was changed to pending/rejected while logged in,
+  // invalidate cookie and force re-auth.
+  if (persistedUser && !isApprovedLoginMethod(persistedUser.loginMethod)) {
+    opts.res.clearCookie(SESSION_COOKIE_NAME, getSessionCookieOptions(opts.req));
+    return {
+      req: opts.req,
+      res: opts.res,
+      user: null,
+    };
+  }
+
   if (shouldRotateSession(payload)) {
-    const rotatedToken = createSessionToken(sessionPayloadToUser(payload), {
-      maxExp: payload.maxExp,
-      sessionVersion: payload.sessionVersion,
-    });
+    const rotatedToken = createSessionToken(
+      {
+        id: persistedUser?.id ?? payload.id,
+        openId: persistedUser?.openId ?? payload.openId,
+        email: persistedUser?.email ?? payload.email,
+        name: persistedUser?.name ?? payload.name,
+        role: persistedUser?.role ?? payload.role,
+      },
+      {
+        maxExp: payload.maxExp,
+        sessionVersion: payload.sessionVersion,
+      }
+    );
     opts.res.cookie(SESSION_COOKIE_NAME, rotatedToken, getSessionCookieOptions(opts.req));
   }
 
-  const user: User = {
-    id: payload.id,
-    openId: payload.openId,
-    name: payload.name,
-    email: payload.email,
-    loginMethod: "local",
-    role: payload.role,
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    lastSignedIn: new Date(),
-  };
+  const user: User =
+    persistedUser ??
+    ({
+      id: payload.id,
+      openId: payload.openId,
+      name: payload.name,
+      email: payload.email,
+      loginMethod: "local",
+      role: payload.role,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastSignedIn: new Date(),
+    } as User);
 
   return {
     req: opts.req,

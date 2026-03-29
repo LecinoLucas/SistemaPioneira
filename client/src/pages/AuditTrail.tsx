@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { buildAuthAuditSummary } from "@shared/auth-audit-presenter";
 import { AUTH_AUDIT_ACTION, AUTH_AUDIT_LABEL, AUTH_LOGIN_AUDIT_ACTIONS } from "@shared/auth-governance";
+import { ACTION_PERMISSION_CATALOG, parseScreenPathFromPermissionKey, SCREEN_CATALOG } from "@shared/access-governance";
 import { STOCK_AUDIT_ACTION, STOCK_AUDIT_LABEL } from "@shared/stock-governance";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,6 +21,19 @@ const ACTION_LABELS: Record<string, string> = {
 
 function formatActionLabel(action: string) {
   return ACTION_LABELS[action] ?? action.replaceAll("_", " ");
+}
+
+function formatPermissionLabel(permissionKey: string) {
+  const action = ACTION_PERMISSION_CATALOG.find((item) => item.key === permissionKey);
+  if (action) return `Ação: ${action.label}`;
+
+  const path = parseScreenPathFromPermissionKey(permissionKey);
+  if (path) {
+    const screen = SCREEN_CATALOG.find((item) => item.path === path);
+    if (screen) return `Tela: ${screen.label}`;
+  }
+
+  return permissionKey;
 }
 
 function buildAuditSummary(event: {
@@ -89,11 +103,31 @@ function getAuditChips(event: {
 
   pushIfPresent("userId", target.userId ?? target.id ?? event.actor?.id);
   pushIfPresent("removed", metadata.removed);
+  pushIfPresent("changed", metadata.changedCount);
   pushIfPresent("scope", metadata.scopePrefix);
   pushIfPresent("identity", metadata.identityContains);
   pushIfPresent("ip", event.actor?.ip);
 
   return chips.slice(0, 6);
+}
+
+function getPermissionDiffLines(event: {
+  action: string;
+  metadata?: Record<string, unknown> | null;
+}) {
+  if (event.action !== AUTH_AUDIT_ACTION.UPDATE_USER_PERMISSIONS) return [];
+  const changedRaw = Array.isArray(event.metadata?.changedPermissions)
+    ? (event.metadata?.changedPermissions as Array<Record<string, unknown>>)
+    : [];
+
+  return changedRaw.slice(0, 12).map((item) => {
+    const permissionKey = String(item.permissionKey ?? "");
+    const before = item.before;
+    const after = item.after;
+    const beforeText = before === null || before === undefined ? "default" : String(before);
+    const afterText = after === null || after === undefined ? "default" : String(after);
+    return `${formatPermissionLabel(permissionKey)}: ${beforeText} -> ${afterText}`;
+  });
 }
 
 function getStorageUsageLevel(usagePercent: number) {
@@ -559,7 +593,9 @@ export default function AuditTrail() {
             <div className="py-10 text-center text-muted-foreground">Nenhum evento encontrado.</div>
           ) : (
             <div className="space-y-3">
-              {eventsQuery.data.map((event, index) => (
+              {eventsQuery.data.map((event, index) => {
+                const permissionDiffLines = getPermissionDiffLines(event);
+                return (
                 <div key={`${event.timestamp}-${event.action}-${index}`} className="rounded-md border p-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant={statusBadgeVariant(event.status)}>{event.status}</Badge>
@@ -591,6 +627,23 @@ export default function AuditTrail() {
                       ))}
                     </div>
                   ) : null}
+                  {permissionDiffLines.length > 0 ? (
+                    <div className="mt-3 rounded-md border bg-muted/20 p-2">
+                      <div className="mb-1 text-[11px] uppercase text-muted-foreground">
+                        Mudanças de permissão
+                      </div>
+                      <div className="space-y-1">
+                        {permissionDiffLines.map((line, lineIndex) => (
+                          <div
+                            key={`${event.timestamp}-${event.action}-perm-${lineIndex}`}
+                            className="text-xs text-foreground"
+                          >
+                            {line}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                   <details className="mt-3">
                     <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
                       Ver detalhes técnicos
@@ -618,7 +671,8 @@ export default function AuditTrail() {
                     </div>
                   </details>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </CardContent>

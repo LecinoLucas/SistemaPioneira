@@ -22,9 +22,19 @@ estoque-manager/
 │       ├── approvals/     # Aprovação/promoção/inativação
 │       └── audit/         # Auditoria/rate-limit/anomalias
 ├── drizzle/               # Schema e migrations do banco
+├── scripts/
+│   ├── data/              # Seeds/importadores auxiliares
+│   └── sql/               # Scripts SQL operacionais
 ├── shared/                # Constantes e tipos compartilhados
 └── package.json           # Scripts da stack
 ```
+
+Para manter o projeto simples no dia a dia, o workspace usa filtros no VS Code para esconder pastas geradas (cache/log/build), deixando foco em:
+- `client/`
+- `server/`
+- `shared/`
+- `drizzle/`
+- `docs/`
 
 Detalhes da arquitetura em camadas:
 - [Arquitetura em Camadas e Módulos](/Users/lecinolucas/Desktop/projetos/estoque-manager/docs/ARCHITECTURE.md)
@@ -84,6 +94,15 @@ pnpm install
 
 ```bash
 pnpm run db:push
+```
+
+Importação auxiliar (Queen):
+
+```bash
+pnpm run seed:queen
+# ou via SQL:
+pnpm run sql:queen:insert
+pnpm run sql:queen:update-brands
 ```
 
 ## Como rodar
@@ -152,6 +171,7 @@ pnpm run test
 
 Procedimentos formais:
 - [Governança e Procedimentos](/Users/lecinolucas/Desktop/projetos/estoque-manager/docs/GOVERNANCA_E_PROCEDIMENTOS.md)
+- [Backlog Técnico](/Users/lecinolucas/Desktop/projetos/estoque-manager/docs/TODO.md)
 
 ## Licença
 

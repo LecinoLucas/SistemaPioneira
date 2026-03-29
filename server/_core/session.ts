@@ -52,7 +52,8 @@ export function createSessionToken(
     iat: now,
     maxExp: absoluteExp,
     exp: Math.min(now + SESSION_TTL_MS, absoluteExp),
-    sessionVersion: options?.sessionVersion ?? Math.floor(now / 1000),
+    // Millisecond precision to avoid session-version collisions in same second.
+    sessionVersion: options?.sessionVersion ?? now,
   };
   const encodedPayload = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
   return `${encodedPayload}.${sign(encodedPayload)}`;

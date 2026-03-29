@@ -10,6 +10,7 @@ export const AUTH_AUDIT_ACTION = {
   REJECT_USER: "auth.reject_user",
   PROMOTE_USER_ADMIN: "auth.promote_user_admin",
   INACTIVATE_USER_TO_PENDING: "auth.inactivate_user_to_pending",
+  UPDATE_USER_PERMISSIONS: "auth.update_user_permissions",
   RATE_LIMIT_CLEAR: "auth.rate_limit_clear",
 } as const;
 
@@ -25,6 +26,7 @@ export const AUTH_AUDIT_LABEL: Record<AuthAuditAction, string> = {
   [AUTH_AUDIT_ACTION.REJECT_USER]: "Usuário rejeitado",
   [AUTH_AUDIT_ACTION.PROMOTE_USER_ADMIN]: "Usuário promovido para admin",
   [AUTH_AUDIT_ACTION.INACTIVATE_USER_TO_PENDING]: "Usuário inativado (pendente)",
+  [AUTH_AUDIT_ACTION.UPDATE_USER_PERMISSIONS]: "Permissões de usuário atualizadas",
   [AUTH_AUDIT_ACTION.RATE_LIMIT_CLEAR]: "Mitigação de rate-limit",
 };
 
@@ -34,6 +36,7 @@ export const AUTH_RATE_LIMIT_SCOPE = {
   PROMOTE_USER_ADMIN: "auth.promote_user_admin",
   INACTIVATE_USER_PENDING: "auth.inactivate_user_pending",
   REJECT_USER: "auth.reject_user",
+  UPDATE_USER_PERMISSIONS: "auth.update_user_permissions",
   AUDIT_EXPORT_CSV: "auth.audit_export_csv",
   RATE_LIMIT_CLEAR: "auth.rate_limit_clear",
 } as const;
@@ -43,4 +46,3 @@ export const AUTH_LOGIN_AUDIT_ACTIONS = [
   AUTH_AUDIT_ACTION.LOGIN_FAILED,
   AUTH_AUDIT_ACTION.LOGIN_BLOCKED,
 ] as const;
-

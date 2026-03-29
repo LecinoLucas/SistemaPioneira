@@ -4,7 +4,9 @@ import express from "express";
 import { createServer } from "http";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { parse as parseCookie } from "cookie";
+import { sql } from "drizzle-orm";
 import { appRouter } from "../routers";
+import { getDb } from "../db";
 import { issueSessionForUser, resolveGoogleAccess } from "./authUsers";
 import { createContext } from "./context";
 import { getSessionCookieOptions } from "./cookies";
@@ -14,6 +16,7 @@ import { exchangeGoogleAuthCode, verifyGoogleIdToken } from "./googleAuth";
 const GOOGLE_STATE_COOKIE = "google_oauth_state";
 
 async function startServer() {
+  const bootAt = Date.now();
   validateEnvironment();
 
   process.on("unhandledRejection", error => {
@@ -100,8 +103,45 @@ async function startServer() {
     }
     next();
   });
-  app.get("/api/health", (_req, res) => {
-    res.json({ ok: true });
+  app.get("/api/health", async (_req, res) => {
+    const dbStartedAt = Date.now();
+    let dbStatus: "up" | "down" | "unconfigured" = "unconfigured";
+    let dbLatencyMs: number | null = null;
+    let dbError: string | null = null;
+
+    if (process.env.DATABASE_URL) {
+      try {
+        const db = await getDb();
+        if (db) {
+          await db.execute(sql`select 1`);
+          dbStatus = "up";
+        } else {
+          dbStatus = "down";
+          dbError = "db_not_available";
+        }
+      } catch (error) {
+        dbStatus = "down";
+        dbError = error instanceof Error ? error.message : "db_health_check_failed";
+      } finally {
+        dbLatencyMs = Date.now() - dbStartedAt;
+      }
+    }
+
+    res.json({
+      ok: true,
+      ready: dbStatus === "up" || dbStatus === "unconfigured",
+      service: "estoque-manager-api",
+      timestamp: new Date().toISOString(),
+      uptimeMs: Date.now() - bootAt,
+      api: {
+        status: "up",
+      },
+      db: {
+        status: dbStatus,
+        latencyMs: dbLatencyMs,
+        error: dbError,
+      },
+    });
   });
 
   app.get("/auth/google/start", (req, res) => {
