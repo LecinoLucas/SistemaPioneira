@@ -279,11 +279,10 @@ describeDb("vendas.catalog-governance", () => {
       caller.vendas.registrar({
         items: [{ productId: product.id, quantidade: 1 }],
         vendedor: "Cleonice",
+        formaPagamento: "",
         observacoes: "Sem forma de pagamento",
       })
-    ).rejects.toMatchObject({
-      message: expect.stringContaining("forma de pagamento"),
-    });
+    ).rejects.toThrow(/forma de pagamento/i);
   });
 
   it("should reject sale with unknown payment method", async () => {

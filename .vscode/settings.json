@@ -40,5 +40,6 @@
     "**/backups": true,
     "**/coverage": true,
     "**/.nyc_output": true
-  }
+  },
+  "totvsLanguageServer.welcomePage": false
 }

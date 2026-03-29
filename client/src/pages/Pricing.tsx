@@ -88,10 +88,20 @@ export default function Pricing() {
     });
   };
 
-  const calculateMargin = (custo: string | null, venda: string | null) => {
-    if (!custo || !venda) return null;
-    const custoNum = parseFloat(custo);
-    const vendaNum = parseFloat(venda);
+  const toNumber = (value: unknown): number | null => {
+    if (value == null || value === "") return null;
+    const parsed = Number.parseFloat(String(value));
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const formatMoney = (value: unknown) => {
+    const amount = toNumber(value);
+    return amount == null ? "-" : `R$ ${amount.toFixed(2)}`;
+  };
+
+  const calculateMargin = (custo: unknown, venda: unknown) => {
+    const custoNum = toNumber(custo);
+    const vendaNum = toNumber(venda);
+    if (custoNum == null || vendaNum == null) return null;
     if (custoNum === 0) return null;
     const margin = ((vendaNum - custoNum) / custoNum) * 100;
     return margin.toFixed(2);
@@ -154,10 +164,10 @@ export default function Pricing() {
                         <Badge variant="outline">{product.categoria}</Badge>
                       </TableCell>
                       <TableCell className="text-right">
-                        {product.precoCusto ? `R$ ${parseFloat(product.precoCusto).toFixed(2)}` : "-"}
+                        {formatMoney(product.precoCusto)}
                       </TableCell>
                       <TableCell className="text-right">
-                        {product.precoVenda ? `R$ ${parseFloat(product.precoVenda).toFixed(2)}` : "-"}
+                        {formatMoney(product.precoVenda)}
                       </TableCell>
                       <TableCell className="text-right">
                         {margin ? (

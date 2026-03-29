@@ -2,6 +2,7 @@ import { STOCK_AUDIT_ACTION } from "@shared/stock-governance";
 import * as db from "../../../../db";
 import { notifyOwner } from "../../../../_core/notification";
 import { ENV } from "../../../../_core/env";
+import type { ProductCategory } from "../../../../db/legacy-domain-types";
 import type { IAuditGateway } from "../../../audit/domain/contracts/audit.gateway";
 import { DomainError } from "../../../shared/errors/domain-error";
 
@@ -237,7 +238,7 @@ export class ProductsService {
         name: item.name,
         marca: item.marca,
         medida: item.medida,
-        categoria: item.categoria as any,
+        categoria: item.categoria as ProductCategory,
         quantidade: item.quantidade,
         estoqueMinimo: item.estoqueMinimo,
         ativoParaVenda: item.ativoParaVenda,
