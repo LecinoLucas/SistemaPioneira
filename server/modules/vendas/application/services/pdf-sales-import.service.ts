@@ -11,6 +11,7 @@ type ProductLite = {
   id: number;
   name: string;
   medida: string;
+  marca: string | null;
   quantidade: number;
 };
 
@@ -51,7 +52,41 @@ export type ImportedSaleDraft = {
   subtotal: number | null;
   itens: ImportedSaleItem[];
   warnings: string[];
+  validationWarnings: string[];
+  validationErrors: string[];
 };
+
+type IndexedProduct = {
+  product: ProductLite;
+  normalizedName: string;
+  normalizedMeasure: string;
+  normalizedBrand: string;
+  tokens: string[];
+};
+
+const PRODUCT_TOKEN_STOPWORDS = new Set([
+  "de",
+  "da",
+  "do",
+  "das",
+  "dos",
+  "e",
+  "em",
+  "para",
+  "com",
+  "sem",
+  "unitario",
+  "valor",
+  "total",
+  "item",
+  "produto",
+  "kit",
+  "un",
+  "pc",
+  "pca",
+  "peca",
+  "pecas",
+]);
 
 function normalizeText(input: string) {
   return input
@@ -291,6 +326,25 @@ function tryPdftotext(filePath: string): string | null {
   return null;
 }
 
+function tryMacOsVisionOcr(filePath: string, maxPages = 3): string | null {
+  if (process.platform !== "darwin") return null;
+
+  const scriptPath = path.resolve(process.cwd(), "scripts/pdf_ocr.swift");
+  if (!existsSync(scriptPath)) return null;
+
+  const run = spawnSync("swift", [scriptPath, filePath, String(maxPages)], {
+    encoding: "utf8",
+    timeout: 45_000,
+    maxBuffer: 20 * 1024 * 1024,
+  });
+
+  if (run.status === 0 && run.stdout && run.stdout.trim().length > 20) {
+    return run.stdout;
+  }
+
+  return null;
+}
+
 async function tryPdftotextFromBuffer(fileName: string, buffer: Buffer): Promise<string | null> {
   const safeName = fileName.replace(/[^a-zA-Z0-9_.-]/g, "_");
   const tempPath = path.join(os.tmpdir(), `sales-import-${Date.now()}-${safeName}`);
@@ -298,6 +352,20 @@ async function tryPdftotextFromBuffer(fileName: string, buffer: Buffer): Promise
   try {
     await fs.writeFile(tempPath, buffer);
     return tryPdftotext(tempPath);
+  } catch {
+    return null;
+  } finally {
+    await fs.unlink(tempPath).catch(() => undefined);
+  }
+}
+
+async function tryMacOsVisionOcrFromBuffer(fileName: string, buffer: Buffer, maxPages = 3): Promise<string | null> {
+  const safeName = fileName.replace(/[^a-zA-Z0-9_.-]/g, "_");
+  const tempPath = path.join(os.tmpdir(), `sales-import-ocr-${Date.now()}-${safeName}`);
+
+  try {
+    await fs.writeFile(tempPath, buffer);
+    return tryMacOsVisionOcr(tempPath, maxPages);
   } catch {
     return null;
   } finally {
@@ -385,19 +453,104 @@ function extractDocumentNumber(text: string): string | null {
 function tokenizeProductName(name: string) {
   return normalizeText(name)
     .split(" ")
-    .filter((token) => token.length >= 3);
+    .filter((token) => token.length >= 2 && !PRODUCT_TOKEN_STOPWORDS.has(token));
 }
 
-function scoreLineAgainstProduct(lineNormalized: string, productTokens: string[]): number {
-  if (!lineNormalized || productTokens.length === 0) return 0;
-
-  const lineTokens = new Set(lineNormalized.split(" "));
-  let hits = 0;
-  for (const token of productTokens) {
-    if (lineTokens.has(token)) hits += 1;
+function extractDescriptionFromLine(line: string): string {
+  const compact = line.replace(/\s+/g, " ").trim();
+  const structuredMatch = compact.match(
+    /^\s*(\d{1,3}(?:[.,]\d{3})?|\d+)\s+(UN|PC|P[CÇ]|CX|JG|KIT)\s+(.+?)\s+\d{1,3}(?:\.\d{3})*,\d{2}\s+\d{1,3}(?:\.\d{3})*,\d{2}\s*$/i
+  );
+  if (structuredMatch?.[3]) {
+    return structuredMatch[3].replace(/\s+/g, " ").trim();
   }
-  const denominator = Math.max(2, Math.min(productTokens.length, 4));
-  return Math.min(1, hits / denominator);
+  return compact;
+}
+
+const TAX_DOCUMENT_MARKERS = [
+  /\bicms\b/i,
+  /\bipi\b/i,
+  /\bpis\b/i,
+  /\bcofins\b/i,
+  /\bcfop\b/i,
+  /\bncm\b/i,
+  /danfe/i,
+  /chave\s+de\s+acesso/i,
+  /base\s+de\s+c[aá]lculo/i,
+  /valor\s+do\s+imposto/i,
+];
+
+const NON_ITEM_LINE_MARKERS = [
+  /pix/i,
+  /receber na entrega/i,
+  /vencimento/i,
+  /documento/i,
+  /descri[cç][aã]o forma/i,
+  /sub\s*total/i,
+  /\btotal\b/i,
+  /desconto/i,
+  /acrescimo/i,
+  /acréscimo/i,
+  /quantidades?:/i,
+  /tipo de frete/i,
+  /cliente:/i,
+  /vendedor:/i,
+  /endere[cç]o:/i,
+  /bairro:/i,
+  /cidade:/i,
+  /estado:/i,
+  /cep:/i,
+  /complemento:/i,
+  /cnpj\/?cpf:/i,
+  /celular:/i,
+  /telefone:/i,
+  /natureza:/i,
+  /situa[cç][aã]o:/i,
+  /f\.?a\.?t\.?u\.?r\.?a/i,
+  ...TAX_DOCUMENT_MARKERS,
+];
+
+function scoreLineAgainstProduct(lineNormalized: string, candidate: IndexedProduct): number {
+  if (!lineNormalized) return 0;
+
+  const lineTokens = new Set(
+    lineNormalized
+      .split(" ")
+      .filter((token) => token.length >= 2 && !PRODUCT_TOKEN_STOPWORDS.has(token))
+  );
+
+  if (lineTokens.size === 0) return 0;
+
+  let score = 0;
+  if (candidate.normalizedName && lineNormalized.includes(candidate.normalizedName)) {
+    score += 0.72;
+  }
+
+  let tokenHits = 0;
+  let strongHits = 0;
+  for (const token of candidate.tokens) {
+    if (!lineTokens.has(token)) continue;
+    tokenHits += 1;
+    if (token.length >= 5) strongHits += 1;
+  }
+
+  if (candidate.tokens.length > 0) {
+    score += Math.min(0.5, (tokenHits / candidate.tokens.length) * 0.5);
+  }
+
+  if (strongHits >= 2) {
+    score += 0.08;
+  }
+
+  if (candidate.normalizedMeasure && lineNormalized.includes(candidate.normalizedMeasure)) {
+    score += 0.12;
+  }
+
+  if (candidate.normalizedBrand && lineNormalized.includes(candidate.normalizedBrand)) {
+    score += 0.08;
+  }
+
+  return Math.min(1, score);
 }
 
 function extractPossibleItems(lines: string[]) {
@@ -406,23 +559,84 @@ function extractPossibleItems(lines: string[]) {
   for (const original of lines) {
     const line = original.trim();
     if (!line || line.length < 6) continue;
-    if (/pix|receber na entrega|vencimento|documento|descri[cç][aã]o forma|total r\$/i.test(line)) continue;
+    if (NON_ITEM_LINE_MARKERS.some((pattern) => pattern.test(line))) continue;
 
-    const hasAmount = /\b\d+[.,]\d{2}\b/.test(line);
-    const hasQty = /\b\d{1,3}\b/.test(line);
-    const hasLetters = /[a-zA-ZÀ-ÿ]{3,}/.test(line);
+    const moneyValues = parseCurrencyNumbersFromLine(line);
+    const hasQty = /\b\d{1,3}(?:[.,]\d{3})?\b/.test(line);
+    const hasUnit = /\b(un|pc|p[cç]|cx|jg|kit)\b/i.test(line);
+    const hasDescription = /[a-zA-ZÀ-ÿ]{3,}/.test(extractDescriptionFromLine(line));
 
-    if (hasLetters && hasQty && hasAmount) {
-      itemLikeLines.push(line);
-      continue;
-    }
-
-    if (hasLetters && /\b(un|pc|pç|cx|jg|kit)\b/i.test(line)) {
+    if (hasDescription && hasQty && hasUnit && moneyValues.length >= 2) {
       itemLikeLines.push(line);
     }
   }
 
   return itemLikeLines;
+}
+
+function canonicalizeItemLikeLine(line: string) {
+  return line
+    .replace(/\s+/g, " ")
+    .replace(/\s+([/-])/g, " $1")
+    .replace(/([/-])\s+/g, "$1 ")
+    .trim();
+}
+
+export function dedupeItemLikeLines(lines: string[]) {
+  const unique = new Map<string, string>();
+
+  for (const line of lines) {
+    const canonical = canonicalizeItemLikeLine(line);
+    if (!canonical) continue;
+    if (!unique.has(canonical)) {
+      unique.set(canonical, canonical);
+    }
+  }
+
+  return Array.from(unique.values());
+}
+
+function normalizeImportedItemLabel(item: ImportedSaleItem) {
+  return normalizeText(item.productName || item.sourceLine || "");
+}
+
+function buildImportedItemFingerprint(item: ImportedSaleItem) {
+  return [
+    normalizeImportedItemLabel(item),
+    item.quantidade,
+    item.valorUnitario ?? "null",
+    item.valorTotal ?? "null",
+  ].join("|");
+}
+
+function shouldReplaceImportedItem(current: ImportedSaleItem, candidate: ImportedSaleItem) {
+  const currentLinked = current.productId != null;
+  const candidateLinked = candidate.productId != null;
+  if (currentLinked !== candidateLinked) return candidateLinked;
+
+  if ((candidate.confidence ?? 0) !== (current.confidence ?? 0)) {
+    return (candidate.confidence ?? 0) > (current.confidence ?? 0);
+  }
+
+  const currentHasMeasure = Boolean(current.medida?.trim());
+  const candidateHasMeasure = Boolean(candidate.medida?.trim());
+  if (currentHasMeasure !== candidateHasMeasure) return candidateHasMeasure;
+
+  return candidate.sourceLine.length > current.sourceLine.length;
+}
+
+export function dedupeImportedSaleItems(items: ImportedSaleItem[]) {
+  const unique = new Map<string, ImportedSaleItem>();
+
+  for (const item of items) {
+    const fingerprint = buildImportedItemFingerprint(item);
+    const current = unique.get(fingerprint);
+    if (!current || shouldReplaceImportedItem(current, item)) {
+      unique.set(fingerprint, item);
+    }
+  }
+
+  return Array.from(unique.values());
 }
 
 function parseQuantityFromLine(line: string): number {
@@ -476,6 +690,87 @@ function parseBrDate(raw: string | null): string | null {
   const parsed = new Date(`${year}-${month}-${day}T12:00:00.000Z`);
   if (Number.isNaN(parsed.getTime())) return null;
   return parsed.toISOString();
+}
+
+type KnownOrderLayoutValidationInput = {
+  text: string;
+  documentNumber: string | null;
+  clienteExtraido: string | null;
+  vendedorExtraido: string | null;
+  enderecoExtraido: string | null;
+  formaPagamentoExtraida: string | null;
+  dataVendaExtraida: string | null;
+  subtotal: number | null;
+  desconto: number | null;
+  total: number | null;
+  paymentEntriesCount: number;
+  itemLinesCount: number;
+};
+
+export function validateKnownOrderLayout(input: KnownOrderLayoutValidationInput) {
+  const taxMarkerCount = TAX_DOCUMENT_MARKERS.filter((pattern) => pattern.test(input.text)).length;
+  const checks = [
+    {
+      ok: /f\.?a\.?t\.?u\.?r\.?a/i.test(input.text),
+      reason: "modelo comercial FATURA",
+    },
+    {
+      ok: /descri[cç][aã]o dos produtos/i.test(input.text),
+      reason: "tabela de produtos",
+    },
+    {
+      ok: /cliente|nome\s*cliente/i.test(input.text) && Boolean(input.clienteExtraido),
+      reason: "campo de cliente",
+    },
+    {
+      ok: /endere[cç]o/i.test(input.text) && /bairro/i.test(input.text) && Boolean(input.enderecoExtraido),
+      reason: "bloco de endereço",
+    },
+    {
+      ok: /vendedor|representante|atendente/i.test(input.text) && Boolean(input.vendedorExtraido),
+      reason: "campo de vendedor",
+    },
+    {
+      ok:
+        /documento/i.test(input.text) &&
+        /descri[cç][aã]o/i.test(input.text) &&
+        /forma/i.test(input.text) &&
+        (input.paymentEntriesCount > 0 || Boolean(input.formaPagamentoExtraida)),
+      reason: "grade de pagamento",
+    },
+    {
+      ok:
+        /subtotal/i.test(input.text) &&
+        /desconto/i.test(input.text) &&
+        /\btotal\b/i.test(input.text) &&
+        input.subtotal != null &&
+        input.desconto != null &&
+        input.total != null,
+      reason: "resumo financeiro",
+    },
+    {
+      ok: Boolean(input.documentNumber?.trim()),
+      reason: "número do documento",
+    },
+    {
+      ok: Boolean(input.dataVendaExtraida),
+      reason: "data da venda",
+    },
+    {
+      ok: input.itemLinesCount > 0,
+      reason: "linhas de item no padrão do pedido",
+    },
+    {
+      ok: /\b\d+\s*-\s*[A-ZÀ-ÿ][A-ZÀ-ÿ\s]{3,}\b/.test(input.text),
+      reason: "identificadores numéricos de cliente/vendedor",
+    },
+    {
+      ok: taxMarkerCount < 3,
+      reason: "aparência de nota fiscal tributária",
+    },
+  ];
+
+  return checks.filter((check) => !check.ok).map((check) => check.reason);
 }
 
 function extractSalesMeta(text: string) {
@@ -595,7 +890,67 @@ function fallbackClientFromFileName(fileName: string): string | null {
   return cleaned;
 }
 
+function scoreDraftQuality(draft: ImportedSaleDraft) {
+  const autoLinkedCount = draft.itens.filter((item) => item.productId != null).length;
+  const unresolvedCount = draft.itens.filter((item) => item.productId == null).length;
+
+  return (
+    draft.itens.length * 2 +
+    autoLinkedCount * 6 -
+    unresolvedCount * 2 +
+    (draft.cliente ? 3 : 0) +
+    (draft.telefoneCliente ? 1 : 0) +
+    (draft.vendedor ? 2 : 0) +
+    (draft.formaPagamento ? 2 : 0) +
+    (draft.dataVenda ? 2 : 0) +
+    (draft.endereco ? 1 : 0) +
+    (draft.total != null ? 1 : 0)
+  );
+}
+
 export class PdfSalesImportService {
+  private shouldAttemptOcr(draft: ImportedSaleDraft, extractedText: string) {
+    const normalizedLength = extractedText.trim().length;
+    const linkedItems = draft.itens.filter((item) => item.productId != null).length;
+    const layoutMismatchReasons = validateKnownOrderLayout({
+      text: extractedText,
+      documentNumber: draft.documentNumber,
+      clienteExtraido: draft.cliente,
+      vendedorExtraido: draft.vendedor,
+      enderecoExtraido: draft.endereco,
+      formaPagamentoExtraida: draft.formaPagamento,
+      dataVendaExtraida: draft.dataVenda,
+      subtotal: draft.subtotal,
+      desconto: draft.desconto,
+      total: draft.total,
+      paymentEntriesCount: draft.formasPagamentoExtraidas.length,
+      itemLinesCount: draft.itens.length,
+    });
+
+    const hasStrongStructuredExtraction =
+      layoutMismatchReasons.length === 0 ||
+      (
+        draft.itens.length > 0 &&
+        Boolean(draft.documentNumber) &&
+        Boolean(draft.cliente) &&
+        Boolean(draft.vendedor) &&
+        Boolean(draft.dataVenda) &&
+        (draft.formasPagamentoExtraidas.length > 0 || Boolean(draft.formaPagamento)) &&
+        draft.total != null
+      );
+
+    if (hasStrongStructuredExtraction) return false;
+
+    if (normalizedLength < 80) return true;
+    if (draft.itens.length === 0) return true;
+    if (linkedItems === 0) return true;
+
+    const hasCoreMetadata = Boolean(draft.cliente || draft.dataVenda || draft.formaPagamento || draft.vendedor);
+    if (!hasCoreMetadata && linkedItems <= 1) return true;
+
+    return false;
+  }
+
   async parseFolder(input: { folderPath?: string; maxFiles?: number }, products: ProductLite[]): Promise<ImportedSaleDraft[]> {
     const basePath = input.folderPath?.trim() || ENV.salesImportDir;
     if (!basePath) {
@@ -616,10 +971,12 @@ export class PdfSalesImportService {
     const maxFiles = Math.max(1, Math.min(input.maxFiles ?? 30, 100));
     const selected = pdfFiles.slice(0, maxFiles);
 
-    const productIndex = products.map((product) => ({
+    const productIndex: IndexedProduct[] = products.map((product) => ({
       product,
-      normalized: normalizeText(product.name),
-      tokens: tokenizeProductName(product.name),
+      normalizedName: normalizeText(product.name),
+      normalizedMeasure: normalizeText(product.medida),
+      normalizedBrand: normalizeText(product.marca ?? ""),
+      tokens: tokenizeProductName(`${product.name} ${product.medida} ${product.marca ?? ""}`),
     }));
 
     const drafts: ImportedSaleDraft[] = [];
@@ -636,10 +993,12 @@ export class PdfSalesImportService {
     files: Array<{ fileName: string; fileBase64: string }>,
     products: ProductLite[]
   ): Promise<ImportedSaleDraft[]> {
-    const productIndex = products.map((product) => ({
+    const productIndex: IndexedProduct[] = products.map((product) => ({
       product,
-      normalized: normalizeText(product.name),
-      tokens: tokenizeProductName(product.name),
+      normalizedName: normalizeText(product.name),
+      normalizedMeasure: normalizeText(product.medida),
+      normalizedBrand: normalizeText(product.marca ?? ""),
+      tokens: tokenizeProductName(`${product.name} ${product.medida} ${product.marca ?? ""}`),
     }));
 
     const drafts: ImportedSaleDraft[] = [];
@@ -656,7 +1015,7 @@ export class PdfSalesImportService {
     fileName: string,
     filePath: string,
     fileHash: string,
-    productIndex: Array<{ product: ProductLite; normalized: string; tokens: string[] }>,
+    productIndex: IndexedProduct[],
     warnings: string[]
   ): ImportedSaleDraft {
     const { cliente, endereco } = extractClientAndAddress(text);
@@ -669,27 +1028,44 @@ export class PdfSalesImportService {
       .map((line) => line.trim())
       .filter(Boolean);
 
-    const itemLikeLines = Array.from(
-      new Set([...extractPossibleItems(lines), ...extractStructuredItems(lines), ...extractItemsFromFullText(text)])
-    );
+    const strongItemLikeLines = [
+      ...extractStructuredItems(lines),
+      ...extractItemsFromFullText(text),
+    ];
+    const rawItemLikeLines = strongItemLikeLines.length > 0
+      ? strongItemLikeLines
+      : extractPossibleItems(lines);
+    const itemLikeLines = dedupeItemLikeLines(rawItemLikeLines);
+    const duplicateCollapsedCount = rawItemLikeLines.length - itemLikeLines.length;
     const itens: ImportedSaleItem[] = [];
 
+    if (duplicateCollapsedCount > 0) {
+      warnings.push(
+        `${duplicateCollapsedCount} linha(s) de item duplicada(s) foram consolidadas automaticamente durante a leitura do PDF.`
+      );
+    }
+
     for (const line of itemLikeLines) {
-      const lineNormalized = normalizeText(line);
+      const description = extractDescriptionFromLine(line);
+      const lineNormalized = normalizeText(description);
       if (!lineNormalized) continue;
 
-      let bestMatch: { id: number; name: string; medida: string; score: number } | null = null;
+      let bestMatch: { id: number; medida: string; quantidade: number; score: number } | null = null;
+      let secondBestScore = 0;
+
       for (const candidate of productIndex) {
-        const directContains = lineNormalized.includes(candidate.normalized);
-        const score = directContains ? 1 : scoreLineAgainstProduct(lineNormalized, candidate.tokens);
+        const score = scoreLineAgainstProduct(lineNormalized, candidate);
 
         if (!bestMatch || score > bestMatch.score) {
+          if (bestMatch) secondBestScore = bestMatch.score;
           bestMatch = {
             id: candidate.product.id,
-            name: candidate.product.name,
             medida: candidate.product.medida,
+            quantidade: candidate.product.quantidade,
             score,
           };
+        } else if (score > secondBestScore) {
+          secondBestScore = score;
         }
       }
 
@@ -697,11 +1073,22 @@ export class PdfSalesImportService {
       const moneyValues = parseCurrencyNumbersFromLine(line);
       const valorTotal = moneyValues.length > 0 ? moneyValues[moneyValues.length - 1] : null;
       const valorUnitario = moneyValues.length > 1 ? moneyValues[moneyValues.length - 2] : null;
+      const isAmbiguous =
+        !!bestMatch &&
+        secondBestScore >= 0.72 &&
+        bestMatch.score < 0.96 &&
+        bestMatch.score - secondBestScore < 0.08;
+      const shouldAutoLink =
+        !!bestMatch &&
+        bestMatch.quantidade > 0 &&
+        bestMatch.score >= 0.82 &&
+        !isAmbiguous;
+      const autoLinkedMatch = shouldAutoLink ? bestMatch : null;
 
-      if (!bestMatch || bestMatch.score < 0.45) {
+      if (!autoLinkedMatch) {
         itens.push({
           productId: null,
-          productName: line,
+          productName: description,
           medida: null,
           quantidade: qty,
           valorUnitario,
@@ -713,15 +1100,24 @@ export class PdfSalesImportService {
       }
 
       itens.push({
-        productId: bestMatch.id,
-        productName: bestMatch.name,
-        medida: bestMatch.medida,
+        productId: autoLinkedMatch.id,
+        productName: description,
+        medida: autoLinkedMatch.medida,
         quantidade: qty,
         valorUnitario,
         valorTotal,
-        confidence: bestMatch.score,
+        confidence: autoLinkedMatch.score,
         sourceLine: line,
       });
+    }
+
+    const dedupedItens = dedupeImportedSaleItems(itens);
+    const duplicateItemsCollapsedCount = itens.length - dedupedItens.length;
+
+    if (duplicateItemsCollapsedCount > 0) {
+      warnings.push(
+        `${duplicateItemsCollapsedCount} item(ns) repetido(s) foram consolidados automaticamente após o parsing do PDF.`
+      );
     }
 
     const resolvedClient = cliente ?? fallbackClientFromFileName(fileName);
@@ -739,6 +1135,21 @@ export class PdfSalesImportService {
       warnings.push("PDF possivelmente sem camada de texto (digitalizado).");
     }
 
+    const layoutMismatchReasons = validateKnownOrderLayout({
+      text,
+      documentNumber,
+      clienteExtraido: cliente,
+      vendedorExtraido: vendedor,
+      enderecoExtraido: endereco,
+      formaPagamentoExtraida: formaPagamento,
+      dataVendaExtraida: dataVenda,
+      subtotal: totals.subtotal,
+      desconto: totals.desconto,
+      total: totals.total,
+      paymentEntriesCount: formasPagamentoExtraidas.length,
+      itemLinesCount: itemLikeLines.length,
+    });
+
     return {
       fileName,
       filePath,
@@ -755,14 +1166,21 @@ export class PdfSalesImportService {
       subtotal: totals.subtotal,
       desconto: totals.desconto,
       total: totals.total,
-      itens,
+      itens: dedupedItens,
       warnings,
+      validationWarnings: [],
+      validationErrors:
+        layoutMismatchReasons.length > 0
+          ? [
+              `Importação bloqueada: o PDF não segue o padrão homologado de pedido. Itens ausentes ou incompatíveis: ${layoutMismatchReasons.join(", ")}.`,
+            ]
+          : [],
     };
   }
 
   private async parseSingleFile(
     filePath: string,
-    productIndex: Array<{ product: ProductLite; normalized: string; tokens: string[] }>
+    productIndex: IndexedProduct[]
   ): Promise<ImportedSaleDraft> {
     const warnings: string[] = [];
     const fileName = path.basename(filePath);
@@ -789,13 +1207,40 @@ export class PdfSalesImportService {
       warnings.push("Não foi possível extrair texto suficiente deste PDF.");
     }
 
-    return this.buildDraftFromText(text, fileName, filePath, fileHash, productIndex, warnings);
+    const baseDraft = this.buildDraftFromText(text, fileName, filePath, fileHash, productIndex, [...warnings]);
+    if (!this.shouldAttemptOcr(baseDraft, text)) {
+      return baseDraft;
+    }
+
+    const ocrText = tryMacOsVisionOcr(filePath, 3);
+    if (!ocrText?.trim()) {
+      if (text.trim().length < 40) {
+        baseDraft.warnings.push("OCR indisponível ou sem resultado útil para este PDF digitalizado.");
+      }
+      return baseDraft;
+    }
+
+    const ocrDraft = this.buildDraftFromText(
+      normalizeExtractedText(ocrText),
+      fileName,
+      filePath,
+      fileHash,
+      productIndex,
+      [...warnings, "OCR Vision aplicado como fallback para melhorar a leitura do PDF."]
+    );
+
+    if (scoreDraftQuality(ocrDraft) >= scoreDraftQuality(baseDraft)) {
+      return ocrDraft;
+    }
+
+    baseDraft.warnings.push("OCR executado, mas a leitura original permaneceu mais consistente.");
+    return baseDraft;
   }
 
   private async parseSingleBuffer(
     fileName: string,
     buffer: Buffer,
-    productIndex: Array<{ product: ProductLite; normalized: string; tokens: string[] }>
+    productIndex: IndexedProduct[]
   ): Promise<ImportedSaleDraft> {
     const warnings: string[] = [];
     const fileHash = createHash("sha256").update(buffer).digest("hex");
@@ -819,6 +1264,33 @@ export class PdfSalesImportService {
       warnings.push("Não foi possível extrair texto suficiente deste PDF.");
     }
 
-    return this.buildDraftFromText(text, fileName, fileName, fileHash, productIndex, warnings);
+    const baseDraft = this.buildDraftFromText(text, fileName, fileName, fileHash, productIndex, [...warnings]);
+    if (!this.shouldAttemptOcr(baseDraft, text)) {
+      return baseDraft;
+    }
+
+    const ocrText = await tryMacOsVisionOcrFromBuffer(fileName, buffer, 3);
+    if (!ocrText?.trim()) {
+      if (text.trim().length < 40) {
+        baseDraft.warnings.push("OCR indisponível ou sem resultado útil para este PDF digitalizado.");
+      }
+      return baseDraft;
+    }
+
+    const ocrDraft = this.buildDraftFromText(
+      normalizeExtractedText(ocrText),
+      fileName,
+      fileName,
+      fileHash,
+      productIndex,
+      [...warnings, "OCR Vision aplicado como fallback para melhorar a leitura do PDF."]
+    );
+
+    if (scoreDraftQuality(ocrDraft) >= scoreDraftQuality(baseDraft)) {
+      return ocrDraft;
+    }
+
+    baseDraft.warnings.push("OCR executado, mas a leitura original permaneceu mais consistente.");
+    return baseDraft;
   }
 }

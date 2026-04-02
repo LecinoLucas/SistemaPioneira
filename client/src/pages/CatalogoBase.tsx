@@ -9,10 +9,78 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Plus, Tag, Ruler, Shapes, Box, CreditCard, UserRound } from "lucide-react";
 import { toast } from "sonner";
+import {
+  normalizeCatalogBrandInput,
+  normalizeCatalogMeasureInput,
+  normalizeCatalogModelInput,
+  normalizeCatalogPaymentInput,
+  normalizeCatalogSellerInput,
+  normalizeCatalogTypeInput,
+} from "@/components/products/types";
 
 type CatalogTab = "brands" | "measures" | "types" | "models" | "payments" | "sellers";
 
+type PaymentCategoryOption = {
+  value: string;
+  label: string;
+  helper: string;
+  suggestedName?: string;
+};
+
 const CATALOG_VIEW_MODE_STORAGE_KEY = "catalog-base-view-mode";
+
+const PAYMENT_CATEGORY_OPTIONS: PaymentCategoryOption[] = [
+  {
+    value: "Instantâneo",
+    label: "Instantâneo",
+    suggestedName: "PIX",
+    helper: "Use para pagamentos imediatos, como PIX.",
+  },
+  {
+    value: "Entrega",
+    label: "Entrega",
+    suggestedName: "Receber na Entrega",
+    helper: "Use para cobranças concluídas na entrega.",
+  },
+  {
+    value: "Cartão",
+    label: "Cartão",
+    helper: "Aqui faz sentido ter variações reais, como Crédito, Débito, Crédito 3x ou Crédito 6x.",
+  },
+  {
+    value: "Boleto",
+    label: "Boleto",
+    suggestedName: "Boleto",
+    helper: "Use um cadastro simples quando não houver variação relevante.",
+  },
+  {
+    value: "Dinheiro",
+    label: "Dinheiro",
+    suggestedName: "Dinheiro",
+    helper: "Para dinheiro, normalmente basta um único cadastro.",
+  },
+  {
+    value: "Transferência",
+    label: "Transferência",
+    suggestedName: "Transferência",
+    helper: "Use para TED, DOC ou transferência bancária.",
+  },
+  {
+    value: "Combinado",
+    label: "Combinado",
+    suggestedName: "Múltiplo (2+ formas)",
+    helper: "Use quando a venda mistura duas ou mais formas de pagamento.",
+  },
+  {
+    value: "Outros",
+    label: "Outros",
+    helper: "Só crie uma variação nova quando ela realmente precisar aparecer separada nas vendas.",
+  },
+] as const;
+
+function getPaymentCategoryConfig(category: string) {
+  return PAYMENT_CATEGORY_OPTIONS.find((option) => option.value === category) ?? null;
+}
 
 const TAB_CONFIG: Record<CatalogTab, { label: string; icon: typeof Tag; singular: string; plural: string }> = {
   brands: { label: "Marcas", icon: Tag, singular: "Marca", plural: "Marcas" },
@@ -22,6 +90,17 @@ const TAB_CONFIG: Record<CatalogTab, { label: string; icon: typeof Tag; singular
   payments: { label: "Pagamentos", icon: CreditCard, singular: "Forma de Pagamento", plural: "Formas de Pagamento" },
   sellers: { label: "Vendedores", icon: UserRound, singular: "Vendedor", plural: "Vendedores" },
 };
+
+function normalizeCatalogEntryName(tab: CatalogTab, value: string) {
+  const trimmed = value.trim();
+  if (tab === "brands") return normalizeCatalogBrandInput(trimmed);
+  if (tab === "measures") return normalizeCatalogMeasureInput(trimmed);
+  if (tab === "types") return normalizeCatalogTypeInput(trimmed);
+  if (tab === "models") return normalizeCatalogModelInput(trimmed);
+  if (tab === "payments") return normalizeCatalogPaymentInput(trimmed);
+  if (tab === "sellers") return normalizeCatalogSellerInput(trimmed);
+  return trimmed;
+}
 
 export default function CatalogoBasePage() {
   const [tab, setTab] = useState<CatalogTab>("brands");
@@ -38,9 +117,7 @@ export default function CatalogoBasePage() {
   const [modelTypeId, setModelTypeId] = useState<string>("");
   const [editModelBrandId, setEditModelBrandId] = useState<string>("");
   const [editModelTypeId, setEditModelTypeId] = useState<string>("");
-  const [paymentCode, setPaymentCode] = useState("");
   const [paymentCategory, setPaymentCategory] = useState("");
-  const [editPaymentCode, setEditPaymentCode] = useState("");
   const [editPaymentCategory, setEditPaymentCategory] = useState("");
   const [search, setSearch] = useState("");
 
@@ -93,7 +170,7 @@ export default function CatalogoBasePage() {
       nome: item.nome,
       codigo: item.codigo,
       categoria: item.categoria,
-      subtitle: `${item.codigo} • ${item.categoria}`,
+      subtitle: item.categoria,
     }));
   }, [tab, brandsQuery.data, measuresQuery.data, typesQuery.data, modelsQuery.data, paymentMethodsQuery.data, sellersQuery.data]);
 
@@ -120,7 +197,6 @@ export default function CatalogoBasePage() {
     setNome("");
     setModelBrandId("");
     setModelTypeId("");
-    setPaymentCode("");
     setPaymentCategory("");
     setShowCreateModal(false);
   };
@@ -130,13 +206,20 @@ export default function CatalogoBasePage() {
     setEditNome("");
     setEditModelBrandId("");
     setEditModelTypeId("");
-    setEditPaymentCode("");
     setEditPaymentCategory("");
     setShowEditModal(false);
   };
 
+  const paymentCreateHelper = paymentCategory
+    ? getPaymentCategoryConfig(paymentCategory)?.helper ?? "Código interno será gerado automaticamente."
+    : "Escolha a categoria e use o nome só quando houver uma variação real da forma de pagamento.";
+
+  const paymentEditHelper = editPaymentCategory
+    ? getPaymentCategoryConfig(editPaymentCategory)?.helper ?? "Código interno será preservado automaticamente."
+    : "Escolha a categoria e use o nome só quando houver uma variação real da forma de pagamento.";
+
   const handleCreate = async () => {
-    const normalized = nome.trim();
+    const normalized = normalizeCatalogEntryName(tab, nome);
     if (!normalized) {
       toast.error(`Nome de ${activeConfig.singular.toLowerCase()} é obrigatório`);
       return;
@@ -156,12 +239,11 @@ export default function CatalogoBasePage() {
           productTypeId: Number(modelTypeId),
         });
       } else if (tab === "payments") {
-        if (!paymentCode.trim() || !paymentCategory.trim()) {
-          toast.error("Informe código e categoria para a forma de pagamento.");
+        if (!paymentCategory.trim()) {
+          toast.error("Informe a categoria para a forma de pagamento.");
           return;
         }
         await createPaymentMethod.mutateAsync({
-          codigo: paymentCode.trim().toUpperCase(),
           nome: normalized,
           categoria: paymentCategory.trim(),
         });
@@ -182,13 +264,12 @@ export default function CatalogoBasePage() {
     setEditNome(item.nome);
     setEditModelBrandId(item.brandId ? String(item.brandId) : "");
     setEditModelTypeId(item.productTypeId ? String(item.productTypeId) : "");
-    setEditPaymentCode(item.codigo ?? "");
     setEditPaymentCategory(item.categoria ?? "");
     setShowEditModal(true);
   };
 
   const handleUpdate = async () => {
-    const normalized = editNome.trim();
+    const normalized = normalizeCatalogEntryName(tab, editNome);
     if (!editId || !normalized) {
       toast.error(`Nome de ${activeConfig.singular.toLowerCase()} é obrigatório`);
       return;
@@ -209,13 +290,12 @@ export default function CatalogoBasePage() {
           productTypeId: Number(editModelTypeId),
         });
       } else if (tab === "payments") {
-        if (!editPaymentCode.trim() || !editPaymentCategory.trim()) {
-          toast.error("Informe código e categoria para a forma de pagamento.");
+        if (!editPaymentCategory.trim()) {
+          toast.error("Informe a categoria para a forma de pagamento.");
           return;
         }
         await updatePaymentMethod.mutateAsync({
           id: editId,
-          codigo: editPaymentCode.trim().toUpperCase(),
           nome: normalized,
           categoria: editPaymentCategory.trim(),
         });
@@ -355,12 +435,17 @@ export default function CatalogoBasePage() {
             <Input
               id="catalog-create-name"
               value={nome}
-              onChange={(e) => setNome(e.target.value)}
-              placeholder={`Digite o nome da ${activeConfig.singular.toLowerCase()}`}
+              onChange={(e) => setNome(normalizeCatalogEntryName(tab, e.target.value))}
+              placeholder={tab === "payments" ? "Ex: Dinheiro, PIX, Cartão de Crédito 3x" : `Digite o nome da ${activeConfig.singular.toLowerCase()}`}
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleCreate();
               }}
             />
+            {tab === "payments" ? (
+              <p className="text-xs text-muted-foreground">
+                {paymentCreateHelper}
+              </p>
+            ) : null}
           </div>
           {tab === "models" ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -397,23 +482,32 @@ export default function CatalogoBasePage() {
             </div>
           ) : null}
           {tab === "payments" ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label>Código</Label>
-                <Input
-                  value={paymentCode}
-                  onChange={(e) => setPaymentCode(e.target.value.toUpperCase())}
-                  placeholder="Ex: RECEBER_NA_ENTREGA"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Categoria</Label>
-                <Input
-                  value={paymentCategory}
-                  onChange={(e) => setPaymentCategory(e.target.value)}
-                  placeholder="Ex: Entrega"
-                />
-              </div>
+            <div className="space-y-2">
+              <Label>Categoria</Label>
+              <Select
+                value={paymentCategory}
+                onValueChange={(value) => {
+                  setPaymentCategory(value);
+                  const suggestedName = getPaymentCategoryConfig(value)?.suggestedName;
+                  if (suggestedName && !nome.trim()) {
+                    setNome(suggestedName);
+                  }
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione a categoria" />
+                </SelectTrigger>
+                <SelectContent>
+                  {PAYMENT_CATEGORY_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                O código interno será gerado automaticamente. Para dinheiro, um cadastro basta. Para cartão, crie só as variações reais.
+              </p>
             </div>
           ) : null}
           <DialogFooter>
@@ -435,12 +529,17 @@ export default function CatalogoBasePage() {
             <Input
               id="catalog-edit-name"
               value={editNome}
-              onChange={(e) => setEditNome(e.target.value)}
-              placeholder={`Digite o nome da ${activeConfig.singular.toLowerCase()}`}
+              onChange={(e) => setEditNome(normalizeCatalogEntryName(tab, e.target.value))}
+              placeholder={tab === "payments" ? "Ex: Dinheiro, PIX, Cartão de Crédito 3x" : `Digite o nome da ${activeConfig.singular.toLowerCase()}`}
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleUpdate();
               }}
             />
+            {tab === "payments" ? (
+              <p className="text-xs text-muted-foreground">
+                {paymentEditHelper}
+              </p>
+            ) : null}
           </div>
           {tab === "models" ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -477,23 +576,32 @@ export default function CatalogoBasePage() {
             </div>
           ) : null}
           {tab === "payments" ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label>Código</Label>
-                <Input
-                  value={editPaymentCode}
-                  onChange={(e) => setEditPaymentCode(e.target.value.toUpperCase())}
-                  placeholder="Ex: RECEBER_NA_ENTREGA"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Categoria</Label>
-                <Input
-                  value={editPaymentCategory}
-                  onChange={(e) => setEditPaymentCategory(e.target.value)}
-                  placeholder="Ex: Entrega"
-                />
-              </div>
+            <div className="space-y-2">
+              <Label>Categoria</Label>
+              <Select
+                value={editPaymentCategory}
+                onValueChange={(value) => {
+                  setEditPaymentCategory(value);
+                  const suggestedName = getPaymentCategoryConfig(value)?.suggestedName;
+                  if (suggestedName && !editNome.trim()) {
+                    setEditNome(suggestedName);
+                  }
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Selecione a categoria" />
+                </SelectTrigger>
+                <SelectContent>
+                  {PAYMENT_CATEGORY_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                O código interno existente será preservado. Ajuste o nome só quando a forma realmente precisar aparecer separada.
+              </p>
             </div>
           ) : null}
           <DialogFooter>

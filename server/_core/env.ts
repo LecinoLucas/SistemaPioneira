@@ -18,14 +18,6 @@ function assertSameSiteValue(value: string) {
   );
 }
 
-function assertStockReadMode(value: string) {
-  if (!value) return;
-  if (value === "legacy" || value === "shadow" || value === "v2") return;
-  throw new Error(
-    "STOCK_V2_READ_MODE inválido. Use apenas: legacy, shadow ou v2."
-  );
-}
-
 export const ENV = {
   cookieSecret: process.env.JWT_SECRET ?? "",
   databaseUrl: process.env.DATABASE_URL ?? "",
@@ -47,10 +39,6 @@ export const ENV = {
   demoAdminPassword: process.env.DEMO_ADMIN_PASSWORD ?? "",
   demoGerentePassword: process.env.DEMO_GERENTE_PASSWORD ?? "",
   demoUserPassword: process.env.DEMO_USER_PASSWORD ?? "",
-  stockV2DualWrite:
-    (process.env.STOCK_V2_DUAL_WRITE ?? "").toLowerCase() === "true" ||
-    process.env.STOCK_V2_DUAL_WRITE === "1",
-  stockV2ReadMode: (process.env.STOCK_V2_READ_MODE ?? "legacy").toLowerCase(),
   legacyMarcasRouterEnabled:
     process.env.LEGACY_MARCAS_ROUTER_ENABLED == null
       ? true
@@ -61,7 +49,6 @@ export const ENV = {
 
 export function validateEnvironment() {
   assertSameSiteValue(ENV.sessionCookieSameSite);
-  assertStockReadMode(ENV.stockV2ReadMode);
 
   const hasGoogleId = Boolean(ENV.googleClientId);
   const hasGoogleSecret = Boolean(ENV.googleClientSecret);

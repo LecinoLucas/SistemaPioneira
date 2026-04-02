@@ -4,7 +4,21 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { CatalogFieldControl, catalogFieldStyles } from "@/components/products/CatalogFieldControl";
+import { Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+
+const productFormDialogClass =
+  "bg-card text-card-foreground w-[min(96vw,760px)] max-w-none max-h-[90vh] overflow-hidden p-0";
+const productFormBodyClass = "max-h-[calc(90vh-9rem)] overflow-y-auto px-5 py-4 sm:px-6";
+const productFormHeaderClass = "border-b bg-muted/20 px-5 py-4 text-left sm:px-6";
+const productFormFooterClass =
+  "border-t bg-background/95 px-5 py-4 shadow-[0_-8px_24px_rgba(15,23,42,0.06)] supports-[backdrop-filter]:bg-background/80 sm:px-6";
+const dialogFieldClass = "h-9";
+
+function normalizeProductNameInput(value: string) {
+  return value.toLocaleUpperCase("pt-BR");
+}
 
 type ProductFormData = {
   name: string;
@@ -36,10 +50,16 @@ type ProductFormDialogProps = {
   enableModelSelector?: boolean;
   lockCatalogValues?: boolean;
   onRequestCreateModel?: () => void;
+  onRequestCreateBrand?: () => void;
+  onRequestCreateMeasure?: () => void;
+  onRequestCreateType?: () => void;
   inputIdPrefix: string;
   showAuditJustification?: boolean;
   auditJustification?: string;
   setAuditJustification?: (value: string) => void;
+  onDelete?: () => void;
+  deleteLabel?: string;
+  deleteDisabled?: boolean;
   onSubmit: () => void;
   onCancel: () => void;
 };
@@ -60,15 +80,25 @@ export default function ProductFormDialog({
   enableModelSelector = false,
   lockCatalogValues = false,
   onRequestCreateModel,
+  onRequestCreateBrand,
+  onRequestCreateMeasure,
+  onRequestCreateType,
   inputIdPrefix,
   showAuditJustification = false,
   auditJustification = "",
   setAuditJustification,
+  onDelete,
+  deleteLabel = "Excluir produto",
+  deleteDisabled = false,
   onSubmit,
   onCancel,
 }: ProductFormDialogProps) {
   const marcasNomes = useMemo(() => (marcas ?? []).map((marca) => marca.nome), [marcas]);
   const canRenderCatalogSelectors = marcasNomes.length > 0 && medidas.length > 0 && categorias.length > 0;
+  const hasModelAction = Boolean(onRequestCreateModel);
+  const hasBrandAction = Boolean(onRequestCreateBrand);
+  const hasMeasureAction = Boolean(onRequestCreateMeasure);
+  const hasTypeAction = Boolean(onRequestCreateType);
   const [modelInputMode, setModelInputMode] = useState<"select" | "manual">(
     enableModelSelector && modelSuggestions.length > 0 ? "select" : "manual"
   );
@@ -92,84 +122,77 @@ export default function ProductFormDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="bg-card text-card-foreground">
-        <DialogHeader>
-          <DialogTitle>{title}</DialogTitle>
-          <DialogDescription>{description}</DialogDescription>
+      <DialogContent className={productFormDialogClass}>
+        <DialogHeader className={productFormHeaderClass}>
+          <DialogTitle className="text-base sm:text-lg">{title}</DialogTitle>
+          <DialogDescription className="text-xs sm:text-sm">{description}</DialogDescription>
         </DialogHeader>
-        <div className="space-y-4 py-4">
-          <div className="space-y-2">
-            <Label htmlFor={`${inputIdPrefix}-name`}>Nome do Produto</Label>
-            {enableModelSelector && modelInputMode === "select" && modelSuggestions.length > 0 ? (
-              <>
-                <Select
-                  value={formData.name && modelSuggestions.includes(formData.name) ? formData.name : "__new__"}
-                  onValueChange={(value) => {
-                    if (value === "__new__") {
-                      if (onRequestCreateModel) {
-                        onRequestCreateModel();
-                      } else {
-                        setModelInputMode("manual");
-                        setFormData({ ...formData, name: "" });
-                      }
-                      return;
-                    }
-                    setFormData({ ...formData, name: value });
-                  }}
-                >
-                  <SelectTrigger id={`${inputIdPrefix}-name`}>
-                    <SelectValue placeholder="Selecione um modelo" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {modelSuggestions.map((model) => (
-                      <SelectItem key={model} value={model}>
-                        {model}
-                      </SelectItem>
-                    ))}
-                    <SelectItem value="__new__">+ Cadastrar novo modelo</SelectItem>
-                  </SelectContent>
-                </Select>
+        <div className={productFormBodyClass}>
+          <div className="space-y-5">
+          <CatalogFieldControl
+            label="Nome do Produto"
+            htmlFor={`${inputIdPrefix}-name`}
+            actionLabel="Cadastrar modelo"
+            onAction={onRequestCreateModel}
+            helper={
+              enableModelSelector && modelSuggestions.length > 0 && modelInputMode === "select" ? (
                 <p className="text-xs text-muted-foreground">
                   Modelos sugeridos com base no catálogo atual ({modelSuggestions.length}).
                 </p>
-              </>
-            ) : (
-              <>
-                <Input
+              ) : enableModelSelector && modelSuggestions.length > 0 ? (
+                <div className="flex items-center gap-3">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className={catalogFieldStyles.helperButton}
+                    onClick={() => setModelInputMode("select")}
+                  >
+                    Escolher modelo já cadastrado
+                  </Button>
+                </div>
+              ) : null
+            }
+          >
+            {enableModelSelector && modelInputMode === "select" && modelSuggestions.length > 0 ? (
+              <Select
+                value={formData.name && modelSuggestions.includes(formData.name) ? formData.name : undefined}
+                onValueChange={(value) => {
+                  setFormData({ ...formData, name: normalizeProductNameInput(value) });
+                }}
+              >
+                <SelectTrigger
                   id={`${inputIdPrefix}-name`}
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="Ex: AMX BRAVISSIMO"
-                />
-                {enableModelSelector && modelSuggestions.length > 0 && (
-                  <div className="flex items-center gap-3">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="px-0 text-xs h-auto"
-                      onClick={() => setModelInputMode("select")}
-                    >
-                      Escolher modelo já cadastrado
-                    </Button>
-                    {onRequestCreateModel && (
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="px-0 text-xs h-auto"
-                        onClick={onRequestCreateModel}
-                      >
-                        + Cadastrar novo modelo
-                      </Button>
-                    )}
-                  </div>
-                )}
-              </>
+                  className={catalogFieldStyles.selectTrigger(hasModelAction)}
+                >
+                  <SelectValue placeholder="Selecione um modelo" />
+                </SelectTrigger>
+                <SelectContent>
+                  {modelSuggestions.map((model) => (
+                    <SelectItem key={model} value={model}>
+                      {model}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <Input
+                id={`${inputIdPrefix}-name`}
+                className={catalogFieldStyles.input(hasModelAction)}
+                value={formData.name}
+                onChange={(e) =>
+                  setFormData({ ...formData, name: normalizeProductNameInput(e.target.value) })
+                }
+                placeholder="Ex: AMX BRAVISSIMO"
+              />
             )}
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor={`${inputIdPrefix}-marca`}>Marca</Label>
+          </CatalogFieldControl>
+          <CatalogFieldControl
+            label="Marca"
+            htmlFor={`${inputIdPrefix}-marca`}
+            actionLabel="Cadastrar marca"
+            onAction={onRequestCreateBrand}
+          >
             <Select
               value={formData.marca || "__none__"}
               disabled={lockCatalogValues && marcasNomes.length === 0}
@@ -180,7 +203,10 @@ export default function ProductFormDialog({
                 })
               }
             >
-              <SelectTrigger id={`${inputIdPrefix}-marca`}>
+              <SelectTrigger
+                id={`${inputIdPrefix}-marca`}
+                className={catalogFieldStyles.selectTrigger(hasBrandAction)}
+              >
                 <SelectValue placeholder="Selecione uma marca" />
               </SelectTrigger>
               <SelectContent>
@@ -192,16 +218,23 @@ export default function ProductFormDialog({
                 ))}
               </SelectContent>
             </Select>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor={`${inputIdPrefix}-medida`}>Medida</Label>
+          </CatalogFieldControl>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <CatalogFieldControl
+              label="Medida"
+              htmlFor={`${inputIdPrefix}-medida`}
+              actionLabel="Cadastrar medida"
+              onAction={onRequestCreateMeasure}
+            >
               <Select
                 value={formData.medida}
                 disabled={lockCatalogValues && medidas.length === 0}
                 onValueChange={(value) => setFormData({ ...formData, medida: value })}
               >
-                <SelectTrigger id={`${inputIdPrefix}-medida`}>
+                <SelectTrigger
+                  id={`${inputIdPrefix}-medida`}
+                  className={catalogFieldStyles.selectTrigger(hasMeasureAction)}
+                >
                   <SelectValue placeholder="Selecione" />
                 </SelectTrigger>
                 <SelectContent>
@@ -212,15 +245,22 @@ export default function ProductFormDialog({
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor={`${inputIdPrefix}-categoria`}>Categoria</Label>
+            </CatalogFieldControl>
+            <CatalogFieldControl
+              label="Categoria"
+              htmlFor={`${inputIdPrefix}-categoria`}
+              actionLabel="Cadastrar tipo"
+              onAction={onRequestCreateType}
+            >
               <Select
                 value={formData.categoria}
                 disabled={lockCatalogValues && categorias.length === 0}
                 onValueChange={(value) => setFormData({ ...formData, categoria: value })}
               >
-                <SelectTrigger id={`${inputIdPrefix}-categoria`}>
+                <SelectTrigger
+                  id={`${inputIdPrefix}-categoria`}
+                  className={catalogFieldStyles.selectTrigger(hasTypeAction)}
+                >
                   <SelectValue placeholder="Selecione" />
                 </SelectTrigger>
                 <SelectContent>
@@ -231,7 +271,7 @@ export default function ProductFormDialog({
                   ))}
                 </SelectContent>
               </Select>
-            </div>
+            </CatalogFieldControl>
           </div>
           {lockCatalogValues && !canRenderCatalogSelectors && (
             <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
@@ -240,11 +280,12 @@ export default function ProductFormDialog({
               </p>
             </div>
           )}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor={`${inputIdPrefix}-quantidade`}>Quantidade</Label>
               <Input
                 id={`${inputIdPrefix}-quantidade`}
+                className={dialogFieldClass}
                 type="number"
                 min="0"
                 value={formData.quantidade}
@@ -255,6 +296,7 @@ export default function ProductFormDialog({
               <Label htmlFor={`${inputIdPrefix}-estoque-minimo`}>Estoque Mínimo</Label>
               <Input
                 id={`${inputIdPrefix}-estoque-minimo`}
+                className={dialogFieldClass}
                 type="number"
                 min="0"
                 value={formData.estoqueMinimo}
@@ -278,8 +320,21 @@ export default function ProductFormDialog({
               <p className="text-xs text-muted-foreground">{auditJustification.length}/500</p>
             </div>
           )}
+          </div>
         </div>
-        <DialogFooter>
+        <DialogFooter className={productFormFooterClass}>
+          {onDelete ? (
+            <Button
+              type="button"
+              variant="destructive"
+              className="mr-auto gap-2"
+              onClick={onDelete}
+              disabled={deleteDisabled}
+            >
+              <Trash2 className="h-4 w-4" />
+              {deleteLabel}
+            </Button>
+          ) : null}
           <Button variant="outline" onClick={onCancel}>
             Cancelar
           </Button>

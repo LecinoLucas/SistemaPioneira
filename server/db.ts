@@ -38,7 +38,6 @@ import {
   getVendasPaginatedFromDb,
   getVendasRelatorioFromDb,
   isEncomendaStatus,
-  isProductCategory,
   listUsersByLoginMethodFromDb,
   listUsersForAdminFromDb,
   listUserPermissionsByUserIdFromDb,
@@ -112,318 +111,6 @@ export async function getDb() {
     }
   }
   return _db;
-}
-
-const LEGACY_DEFAULT_BRANCH_CODE = "MATRIZ";
-async function runV2DualWrite(
-  scope: string,
-  operation: (db: ReturnType<typeof drizzle>) => Promise<void>
-) {
-  if (!ENV.stockV2DualWrite) return;
-  const db = await getDb();
-  if (!db) return;
-  try {
-    await operation(db);
-  } catch (error) {
-    console.warn(`[V2 Dual Write] ${scope} falhou (legado mantido):`, error);
-  }
-}
-
-async function getDashboardStatsV2(dbConn: ReturnType<typeof drizzle>) {
-  const result = await dbConn.execute(sql`
-    SELECT
-      COUNT(pv2.id) AS totalProducts,
-      COALESCE(SUM(ib.on_hand), 0) AS totalItems,
-      COALESCE(SUM(CASE WHEN ib.on_hand < 0 THEN 1 ELSE 0 END), 0) AS negativeStockCount,
-      COALESCE(
-        SUM(
-          CASE
-            WHEN ib.on_hand <= 1 OR ib.on_hand <= ib.minimum_stock THEN 1
-            ELSE 0
-          END
-        ),
-        0
-      ) AS lowStockCount
-    FROM products_v2 pv2
-    JOIN inventory_balances ib ON ib.product_id = pv2.id
-    JOIN branches b ON b.id = ib.branch_id
-    WHERE b.code = ${LEGACY_DEFAULT_BRANCH_CODE}
-      AND pv2.is_archived = 0
-  `);
-  const rows = extractRows(result);
-  const row = rows[0] ?? {};
-
-  const recentMovementsResult = await dbConn.execute(sql`
-    SELECT COUNT(*) AS count
-    FROM inventory_movements im
-    JOIN branches b ON b.id = im.branch_id
-    WHERE b.code = ${LEGACY_DEFAULT_BRANCH_CODE}
-      AND im.created_at >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
-  `);
-  const recentRows = extractRows(recentMovementsResult);
-  const recent = recentRows[0] ?? {};
-
-  return {
-    totalProducts: Number(row.totalProducts ?? 0),
-    lowStockCount: Number(row.lowStockCount ?? 0),
-    totalItems: Number(row.totalItems ?? 0),
-    recentMovements: Number(recent.count ?? 0),
-    negativeStockCount: Number(row.negativeStockCount ?? 0),
-  };
-}
-
-type V2OverlayProduct = {
-  legacyId: number;
-  v2Id: number;
-  name: string;
-  marca: string | null;
-  medida: string;
-  categoria: string;
-  onHand: number | null;
-};
-
-async function getV2OverlayProductsByLegacyIds(
-  dbConn: ReturnType<typeof drizzle>,
-  legacyIds: number[]
-) {
-  if (!legacyIds.length) return new Map<number, V2OverlayProduct>();
-
-  const result = await dbConn.execute(sql`
-    SELECT
-      lpl.legacy_product_id AS legacyId,
-      pv2.id AS v2Id,
-      pv2.name AS name,
-      cb.name AS marca,
-      cm.description AS medida,
-      cpt.name AS categoria,
-      ib.on_hand AS onHand
-    FROM legacy_product_links lpl
-    JOIN products_v2 pv2 ON pv2.id = lpl.product_v2_id
-    JOIN catalog_brands cb ON cb.id = pv2.brand_id
-    JOIN catalog_measures cm ON cm.id = pv2.measure_id
-    JOIN catalog_product_types cpt ON cpt.id = pv2.product_type_id
-    LEFT JOIN branches b
-      ON b.code = ${LEGACY_DEFAULT_BRANCH_CODE}
-    LEFT JOIN inventory_balances ib
-      ON ib.product_id = pv2.id
-      AND ib.branch_id = b.id
-    WHERE lpl.legacy_product_id IN (${sql.join(legacyIds.map((id) => sql`${id}`), sql`, `)})
-  `);
-
-  const rows = extractRows(result);
-  const map = new Map<number, V2OverlayProduct>();
-  for (const row of rows) {
-    const legacyId = Number(row.legacyId ?? 0);
-    if (!legacyId) continue;
-    if (map.has(legacyId)) continue;
-    map.set(legacyId, {
-      legacyId,
-      v2Id: Number(row.v2Id ?? 0),
-      name: String(row.name ?? ""),
-      marca: row.marca != null ? String(row.marca) : null,
-      medida: String(row.medida ?? ""),
-      categoria: String(row.categoria ?? ""),
-      onHand: row.onHand != null ? Number(row.onHand) : null,
-    });
-  }
-  return map;
-}
-
-async function getLegacyProductSnapshot(dbConn: ReturnType<typeof drizzle>, productId: number) {
-  const rows = await dbConn.select().from(products).where(eq(products.id, productId)).limit(1);
-  return rows[0];
-}
-
-async function ensureBranchIdV2(dbConn: ReturnType<typeof drizzle>) {
-  await dbConn.execute(sql`
-    INSERT INTO branches (code, name)
-    VALUES (${LEGACY_DEFAULT_BRANCH_CODE}, 'Matriz')
-    ON DUPLICATE KEY UPDATE name = VALUES(name), is_active = 1
-  `);
-  return await queryFirstId(
-    dbConn,
-    sql`SELECT id FROM branches WHERE code = ${LEGACY_DEFAULT_BRANCH_CODE} LIMIT 1`,
-    "id"
-  );
-}
-
-function normalizeCatalogCode(value: string) {
-  return value
-    .trim()
-    .replace(/\s+/g, "_")
-    .replace(/-/g, "_")
-    .toUpperCase();
-}
-
-async function ensureV2ProductFromLegacy(
-  dbConn: ReturnType<typeof drizzle>,
-  legacyProduct: typeof products.$inferSelect
-) {
-  const brandName =
-    legacyProduct.marca && legacyProduct.marca.trim().length > 0 ? legacyProduct.marca.trim() : "SEM_MARCA";
-  const measureDescription = legacyProduct.medida.trim();
-  const typeName = String(legacyProduct.categoria).trim();
-  const modelName = legacyProduct.name.trim();
-
-  await dbConn.execute(sql`
-    INSERT INTO catalog_brands (name)
-    VALUES (${brandName})
-    ON DUPLICATE KEY UPDATE name = VALUES(name), is_active = 1
-  `);
-  await dbConn.execute(sql`
-    INSERT INTO catalog_measures (code, description)
-    VALUES (${normalizeCatalogCode(measureDescription)}, ${measureDescription})
-    ON DUPLICATE KEY UPDATE description = VALUES(description), is_active = 1
-  `);
-  await dbConn.execute(sql`
-    INSERT INTO catalog_product_types (code, name)
-    VALUES (${normalizeCatalogCode(typeName)}, ${typeName})
-    ON DUPLICATE KEY UPDATE name = VALUES(name), is_active = 1
-  `);
-
-  const brandId = await queryFirstId(
-    dbConn,
-    sql`SELECT id FROM catalog_brands WHERE name = ${brandName} LIMIT 1`,
-    "id"
-  );
-  const measureId = await queryFirstId(
-    dbConn,
-    sql`SELECT id FROM catalog_measures WHERE description = ${measureDescription} LIMIT 1`,
-    "id"
-  );
-  const productTypeId = await queryFirstId(
-    dbConn,
-    sql`SELECT id FROM catalog_product_types WHERE name = ${typeName} LIMIT 1`,
-    "id"
-  );
-  if (!brandId || !measureId || !productTypeId) return null;
-
-  await dbConn.execute(sql`
-    INSERT INTO catalog_models (brand_id, product_type_id, name, code)
-    VALUES (${brandId}, ${productTypeId}, ${modelName}, NULL)
-    ON DUPLICATE KEY UPDATE name = VALUES(name), is_active = 1
-  `);
-  const modelId = await queryFirstId(
-    dbConn,
-    sql`SELECT id FROM catalog_models
-        WHERE brand_id = ${brandId}
-          AND product_type_id = ${productTypeId}
-          AND name = ${modelName}
-        LIMIT 1`,
-    "id"
-  );
-  if (!modelId) return null;
-
-  const isArchived = Number(legacyProduct.arquivado ?? 0) === 1;
-  await dbConn.execute(sql`
-    INSERT INTO products_v2 (
-      name, brand_id, measure_id, product_type_id, model_id,
-      is_sellable, is_archived, inactivation_reason, archive_reason,
-      cost_price, sale_price, created_at, updated_at
-    ) VALUES (
-      ${legacyProduct.name},
-      ${brandId},
-      ${measureId},
-      ${productTypeId},
-      ${modelId},
-      ${legacyProduct.ativoParaVenda ? 1 : 0},
-      ${isArchived ? 1 : 0},
-      ${legacyProduct.motivoInativacao ?? null},
-      ${legacyProduct.motivoArquivamento ?? null},
-      ${legacyProduct.precoCusto ?? null},
-      ${legacyProduct.precoVenda ?? null},
-      ${legacyProduct.createdAt ?? new Date()},
-      ${legacyProduct.updatedAt ?? new Date()}
-    )
-    ON DUPLICATE KEY UPDATE
-      name = VALUES(name),
-      is_sellable = VALUES(is_sellable),
-      is_archived = VALUES(is_archived),
-      inactivation_reason = VALUES(inactivation_reason),
-      archive_reason = VALUES(archive_reason),
-      cost_price = VALUES(cost_price),
-      sale_price = VALUES(sale_price),
-      updated_at = VALUES(updated_at)
-  `);
-
-  const productV2Id = await queryFirstId(
-    dbConn,
-    sql`SELECT id FROM products_v2
-        WHERE brand_id = ${brandId}
-          AND measure_id = ${measureId}
-          AND product_type_id = ${productTypeId}
-          AND model_id = ${modelId}
-        LIMIT 1`,
-    "id"
-  );
-  if (!productV2Id) return null;
-
-  await dbConn.execute(sql`
-    INSERT INTO legacy_product_links (legacy_product_id, product_v2_id)
-    VALUES (${legacyProduct.id}, ${productV2Id})
-    ON DUPLICATE KEY UPDATE
-      product_v2_id = VALUES(product_v2_id),
-      updated_at = CURRENT_TIMESTAMP
-  `);
-
-  const branchId = await ensureBranchIdV2(dbConn);
-  if (!branchId) return productV2Id;
-
-  await dbConn.execute(sql`
-    INSERT INTO inventory_balances (branch_id, product_id, on_hand, reserved, minimum_stock)
-    VALUES (${branchId}, ${productV2Id}, ${legacyProduct.quantidade}, 0, ${legacyProduct.estoqueMinimo})
-    ON DUPLICATE KEY UPDATE
-      on_hand = VALUES(on_hand),
-      minimum_stock = VALUES(minimum_stock),
-      updated_at = CURRENT_TIMESTAMP
-  `);
-
-  return productV2Id;
-}
-
-async function mirrorLegacyMovementToV2(input: {
-  scope: string;
-  productId: number;
-  movementType: "IN" | "OUT" | "ADJUSTMENT";
-  quantity: number;
-  quantityBefore: number;
-  quantityAfter: number;
-  reason?: string;
-  userId?: number | null;
-  referenceType?: string;
-  referenceId?: string;
-  createdAt?: Date;
-}) {
-  await runV2DualWrite(input.scope, async (dbConn) => {
-    const legacyProduct = await getLegacyProductSnapshot(dbConn, input.productId);
-    if (!legacyProduct) return;
-    const productV2Id = await ensureV2ProductFromLegacy(dbConn, legacyProduct);
-    if (!productV2Id) return;
-    const branchId = await ensureBranchIdV2(dbConn);
-    if (!branchId) return;
-
-    await dbConn.execute(sql`
-      INSERT INTO inventory_movements (
-        branch_id, product_id, movement_type, quantity,
-        quantity_before, quantity_after, reserved_before, reserved_after,
-        reference_type, reference_id, reason, performed_by, created_at
-      ) VALUES (
-        ${branchId},
-        ${productV2Id},
-        ${input.movementType},
-        ${input.quantity},
-        ${input.quantityBefore},
-        ${input.quantityAfter},
-        0,
-        0,
-        ${input.referenceType ?? "LEGACY_RUNTIME"},
-        ${input.referenceId ?? null},
-        ${input.reason ?? null},
-        ${input.userId ?? null},
-        ${input.createdAt ?? new Date()}
-      )
-    `);
-  });
 }
 
 async function ensureUserPermissionsTable() {
@@ -861,59 +548,17 @@ export async function getAllProducts(
   return { items, total: Number(countResult[0]?.count ?? 0) };
 }
 
-/**
- * Returns products ranked by recent sales relevance to improve product picker UX.
- * Ranking priority:
- * 1) weighted sold quantity in last 30 days (x3)
- * 2) sold quantity in last 90 days (x1)
- * 3) most recently sold
- * 4) alphabetical fallback
- */
 export async function getSmartProducts(limit?: number, offset?: number, onlyActiveForSales?: boolean) {
   const db = await getDb();
   if (!db) return { items: [], total: 0 };
 
-  const salesAgg = db
-    .select({
-      productId: vendas.productId,
-      score: sql<number>`
-        COALESCE(
-          SUM(
-            CASE
-              WHEN ${vendas.dataVenda} >= DATE_SUB(NOW(), INTERVAL 30 DAY) THEN ${vendas.quantidade} * 3
-              WHEN ${vendas.dataVenda} >= DATE_SUB(NOW(), INTERVAL 90 DAY) THEN ${vendas.quantidade}
-              ELSE 0
-            END
-          ),
-          0
-        )
-      `.as("score"),
-      lastSoldAt: sql<Date | null>`MAX(${vendas.dataVenda})`.as("lastSoldAt"),
-    })
-    .from(vendas)
-    .where(eq(vendas.status, "concluida"))
-    .groupBy(vendas.productId)
-    .as("sales_agg");
-
-  const queryBase = db
-    .select({
-      product: products,
-      salesScore: sql<number>`COALESCE(${salesAgg.score}, 0)`,
-      lastSoldAt: salesAgg.lastSoldAt,
-    })
-    .from(products)
-    .leftJoin(salesAgg, eq(products.id, salesAgg.productId));
-
   const conditions: SQL[] = [eq(products.arquivado, false)];
   if (onlyActiveForSales) conditions.push(eq(products.ativoParaVenda, true));
-  const query = queryBase.where(and(...conditions));
-
-  const orderedQuery = query
-    .orderBy(
-      desc(sql`COALESCE(${salesAgg.score}, 0)`),
-      desc(sql`COALESCE(${salesAgg.lastSoldAt}, '1970-01-01 00:00:00')`),
-      products.name
-    );
+  const orderedQuery = db
+    .select()
+    .from(products)
+    .where(and(...conditions))
+    .orderBy(products.name);
 
   const [rows, countResult] = await Promise.all([
     limit !== undefined ? orderedQuery.limit(limit).offset(offset ?? 0) : orderedQuery,
@@ -928,7 +573,7 @@ export async function getSmartProducts(limit?: number, offset?: number, onlyActi
   ]);
 
   return {
-    items: rows.map((row) => row.product),
+    items: rows,
     total: Number(countResult[0]?.count ?? 0),
   };
 }
@@ -994,14 +639,13 @@ export async function searchProducts(
   }
   
   if (medida) {
-    conditions.push(eq(products.medida, medida));
+    const normalizedMedida = medida.trim().toLowerCase();
+    conditions.push(sql`LOWER(TRIM(${products.medida})) = ${normalizedMedida}`);
   }
   
   if (categoria) {
-    if (!isProductCategory(categoria)) {
-      return { items: [], total: 0 };
-    }
-    conditions.push(eq(products.categoria, categoria));
+    const normalizedCategoria = categoria.trim().toLowerCase();
+    conditions.push(sql`LOWER(TRIM(${products.categoria})) = ${normalizedCategoria}`);
   }
   
   if (marca) {
@@ -1053,13 +697,12 @@ export async function countLegacyProductsDistinctCatalogKey(input?: {
     conditions.push(like(products.name, `%${searchTerm}%`));
   }
   if (medida) {
-    conditions.push(eq(products.medida, medida));
+    const normalizedMedida = medida.trim().toLowerCase();
+    conditions.push(sql`LOWER(TRIM(${products.medida})) = ${normalizedMedida}`);
   }
   if (categoria) {
-    if (!isProductCategory(categoria)) {
-      return 0;
-    }
-    conditions.push(eq(products.categoria, categoria));
+    const normalizedCategoria = categoria.trim().toLowerCase();
+    conditions.push(sql`LOWER(TRIM(${products.categoria})) = ${normalizedCategoria}`);
   }
   if (marca) {
     conditions.push(eq(products.marca, marca));
@@ -1090,186 +733,6 @@ export async function countLegacyProductsDistinctCatalogKey(input?: {
 
   const rows = whereClause ? await query.where(whereClause) : await query;
   return Number(rows[0]?.count ?? 0);
-}
-
-export async function getV2HealthSnapshot() {
-  const db = await getDb();
-  if (!db) {
-    return {
-      readMode: ENV.stockV2ReadMode,
-      dualWriteEnabled: ENV.stockV2DualWrite,
-      legacyTotal: 0,
-      legacyDistinctCatalogKeyTotal: 0,
-      v2Total: 0,
-      legacyWithoutV2: 0,
-      v2WithoutBalanceInMatriz: 0,
-      driftLegacyVsV2: 0,
-      driftDistinctVsV2: 0,
-      status: "db_unavailable" as const,
-    };
-  }
-
-  const [legacyCountRows] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(products)
-    .where(eq(products.arquivado, false));
-  const legacyTotal = Number(legacyCountRows?.count ?? 0);
-
-  const legacyDistinctCatalogKeyTotal = await countLegacyProductsDistinctCatalogKey({
-    includeArchived: false,
-  });
-
-  const v2TotalResult = await db.execute(sql`
-    SELECT COUNT(*) AS count
-    FROM products_v2 pv2
-    WHERE pv2.is_archived = 0
-  `);
-  const v2TotalRows = extractRows(v2TotalResult);
-  const v2Total = Number(v2TotalRows[0]?.count ?? 0);
-
-  const legacyWithoutV2Result = await db.execute(sql`
-    SELECT COUNT(*) AS count
-    FROM products p
-    LEFT JOIN legacy_product_links lpl
-      ON lpl.legacy_product_id = p.id
-    WHERE COALESCE(p.arquivado, 0) = 0
-      AND lpl.product_v2_id IS NULL
-  `);
-  const legacyWithoutV2Rows = extractRows(legacyWithoutV2Result);
-  const legacyWithoutV2 = Number(legacyWithoutV2Rows[0]?.count ?? 0);
-
-  const v2WithoutBalanceResult = await db.execute(sql`
-    SELECT COUNT(*) AS count
-    FROM products_v2 pv2
-    JOIN branches br
-      ON br.code = ${LEGACY_DEFAULT_BRANCH_CODE}
-    LEFT JOIN inventory_balances ib
-      ON ib.product_id = pv2.id
-     AND ib.branch_id = br.id
-    WHERE pv2.is_archived = 0
-      AND ib.id IS NULL
-  `);
-  const v2WithoutBalanceRows = extractRows(v2WithoutBalanceResult);
-  const v2WithoutBalanceInMatriz = Number(v2WithoutBalanceRows[0]?.count ?? 0);
-
-  return {
-    readMode: ENV.stockV2ReadMode,
-    dualWriteEnabled: ENV.stockV2DualWrite,
-    legacyTotal,
-    legacyDistinctCatalogKeyTotal,
-    v2Total,
-    legacyWithoutV2,
-    v2WithoutBalanceInMatriz,
-    driftLegacyVsV2: legacyTotal - v2Total,
-    driftDistinctVsV2: legacyDistinctCatalogKeyTotal - v2Total,
-    status: "ok" as const,
-  };
-}
-
-export async function listProductsV2ReadModel(input?: {
-  searchTerm?: string;
-  medida?: string;
-  categoria?: string;
-  marca?: string;
-  onlyActiveForSales?: boolean;
-  includeArchived?: boolean;
-  page?: number;
-  pageSize?: number;
-}) {
-  const db = await getDb();
-  if (!db) return { items: [], total: 0 };
-
-  const page = input?.page ?? 1;
-  const pageSize = Math.min(input?.pageSize ?? 25, 100);
-  const offset = (page - 1) * pageSize;
-  const searchTerm = (input?.searchTerm ?? "").trim();
-  const medida = (input?.medida ?? "").trim();
-  const categoria = (input?.categoria ?? "").trim();
-  const marca = (input?.marca ?? "").trim();
-  const includeArchived = Boolean(input?.includeArchived);
-  const onlyActiveForSales = Boolean(input?.onlyActiveForSales);
-
-  const baseWhere = sql`
-    b.code = ${LEGACY_DEFAULT_BRANCH_CODE}
-    AND (${includeArchived ? 1 : 0} = 1 OR pv2.is_archived = 0)
-    AND (${onlyActiveForSales ? 1 : 0} = 0 OR pv2.is_sellable = 1)
-    AND (${searchTerm || null} IS NULL OR LOWER(pv2.name) LIKE LOWER(CONCAT('%', ${searchTerm}, '%')))
-    AND (${medida || null} IS NULL OR cm.description = ${medida})
-    AND (${categoria || null} IS NULL OR cpt.name = ${categoria})
-    AND (${marca || null} IS NULL OR cb.name = ${marca})
-  `;
-
-  const itemsResult = await db.execute(sql`
-    SELECT
-      lpl_view.legacy_id AS legacyId,
-      pv2.id AS v2Id,
-      pv2.name AS name,
-      cb.name AS marca,
-      cm.description AS medida,
-      cpt.name AS categoria,
-      ib.on_hand AS quantidade,
-      ib.minimum_stock AS estoqueMinimo,
-      pv2.is_sellable AS ativoParaVenda,
-      pv2.is_archived AS arquivado,
-      pv2.inactivation_reason AS motivoInativacao,
-      pv2.archive_reason AS motivoArquivamento,
-      pv2.cost_price AS precoCusto,
-      pv2.sale_price AS precoVenda,
-      pv2.created_at AS createdAt,
-      pv2.updated_at AS updatedAt
-    FROM products_v2 pv2
-    JOIN catalog_brands cb ON cb.id = pv2.brand_id
-    JOIN catalog_measures cm ON cm.id = pv2.measure_id
-    JOIN catalog_product_types cpt ON cpt.id = pv2.product_type_id
-    JOIN inventory_balances ib ON ib.product_id = pv2.id
-    JOIN branches b ON b.id = ib.branch_id
-    LEFT JOIN (
-      SELECT product_v2_id, MIN(legacy_product_id) AS legacy_id
-      FROM legacy_product_links
-      GROUP BY product_v2_id
-    ) lpl_view ON lpl_view.product_v2_id = pv2.id
-    WHERE ${baseWhere}
-    ORDER BY pv2.name ASC
-    LIMIT ${pageSize}
-    OFFSET ${offset}
-  `);
-
-  const countResult = await db.execute(sql`
-    SELECT COUNT(*) AS count
-    FROM products_v2 pv2
-    JOIN catalog_brands cb ON cb.id = pv2.brand_id
-    JOIN catalog_measures cm ON cm.id = pv2.measure_id
-    JOIN catalog_product_types cpt ON cpt.id = pv2.product_type_id
-    JOIN inventory_balances ib ON ib.product_id = pv2.id
-    JOIN branches b ON b.id = ib.branch_id
-    WHERE ${baseWhere}
-  `);
-
-  const itemRows = extractRows(itemsResult);
-  const countRows = extractRows(countResult);
-  const total = Number(countRows[0]?.count ?? 0);
-
-  const items = itemRows.map((row) => ({
-    id: row.legacyId != null ? Number(row.legacyId) : null,
-    legacyId: row.legacyId != null ? Number(row.legacyId) : null,
-    v2Id: Number(row.v2Id),
-    name: String(row.name ?? ""),
-    marca: row.marca != null ? String(row.marca) : null,
-    medida: String(row.medida ?? ""),
-    categoria: String(row.categoria ?? ""),
-    quantidade: Number(row.quantidade ?? 0),
-    estoqueMinimo: Number(row.estoqueMinimo ?? 0),
-    ativoParaVenda: Number(row.ativoParaVenda ?? 0) === 1,
-    arquivado: Number(row.arquivado ?? 0) === 1,
-    motivoInativacao: row.motivoInativacao != null ? String(row.motivoInativacao) : null,
-    motivoArquivamento: row.motivoArquivamento != null ? String(row.motivoArquivamento) : null,
-    precoCusto: row.precoCusto ?? null,
-    precoVenda: row.precoVenda ?? null,
-    createdAt: row.createdAt ?? null,
-    updatedAt: row.updatedAt ?? null,
-  }));
-
-  return { items, total };
 }
 
 export async function getAllBrands() {
@@ -1338,26 +801,6 @@ export async function createProductWithInitialMovement(
     return inserted;
   });
 
-  await runV2DualWrite("products.create", async (dbConn) => {
-    const snapshot = await getLegacyProductSnapshot(dbConn, inserted.id);
-    if (!snapshot) return;
-    await ensureV2ProductFromLegacy(dbConn, snapshot);
-    if (snapshot.quantidade > 0) {
-      await mirrorLegacyMovementToV2({
-        scope: "products.create.initial_stock",
-        productId: snapshot.id,
-        movementType: "IN",
-        quantity: snapshot.quantidade,
-        quantityBefore: 0,
-        quantityAfter: snapshot.quantidade,
-        reason: "Estoque inicial (dual-write)",
-        userId,
-        referenceType: "LEGACY_RUNTIME_CREATE",
-        referenceId: String(snapshot.id),
-      });
-    }
-  });
-
   return inserted;
 }
 
@@ -1370,30 +813,6 @@ export async function updateProduct(id: number, product: Partial<InsertProduct>)
   await db.update(products).set(product).where(eq(products.id, id));
 
   if (!beforeProduct) return;
-
-  await runV2DualWrite("products.update", async (dbConn) => {
-    const afterProduct = await getLegacyProductSnapshot(dbConn, id);
-    if (!afterProduct) return;
-    await ensureV2ProductFromLegacy(dbConn, afterProduct);
-
-    const stockChanged =
-      product.quantidade !== undefined && Number(product.quantidade) !== Number(beforeProduct.quantidade);
-    if (stockChanged) {
-      const beforeQty = Number(beforeProduct.quantidade);
-      const afterQty = Number(product.quantidade);
-      await mirrorLegacyMovementToV2({
-        scope: "products.update.stock",
-        productId: id,
-        movementType: afterQty >= beforeQty ? "IN" : "OUT",
-        quantity: Math.abs(afterQty - beforeQty),
-        quantityBefore: beforeQty,
-        quantityAfter: afterQty,
-        reason: "Ajuste manual de estoque (dual-write)",
-        referenceType: "LEGACY_RUNTIME_UPDATE",
-        referenceId: String(id),
-      });
-    }
-  });
 }
 
 export async function deleteProduct(id: number) {
@@ -1432,29 +851,7 @@ export async function deleteProduct(id: number) {
     await tx.delete(products).where(eq(products.id, id));
   });
 
-  if (!deletedSnapshot) return;
-  await runV2DualWrite("products.delete", async (dbConn) => {
-    const linkedRows = extractRows(
-      await dbConn.execute(sql`
-        SELECT product_v2_id
-        FROM legacy_product_links
-        WHERE legacy_product_id = ${deletedSnapshot.id}
-        LIMIT 1
-      `)
-    );
-    const linkedV2Id = Number(linkedRows[0]?.product_v2_id ?? 0);
-    if (!linkedV2Id) return;
-
-    await dbConn.execute(sql`
-      UPDATE products_v2
-      SET
-        is_sellable = 0,
-        is_archived = 1,
-        archive_reason = COALESCE(archive_reason, 'Excluido no legado'),
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = ${linkedV2Id}
-    `);
-  });
+  void deletedSnapshot;
 }
 
 // ============ Movimentação Functions ============
@@ -1637,22 +1034,6 @@ export async function registrarVendasAtomico(data: {
     }
   });
 
-  for (const event of movementEvents) {
-    await mirrorLegacyMovementToV2({
-      scope: "sales.register",
-      productId: event.productId,
-      movementType: "OUT",
-      quantity: event.quantidade,
-      quantityBefore: event.beforeQty,
-      quantityAfter: event.afterQty,
-      reason: data.observacaoMovimentacao,
-      userId: data.userId,
-      referenceType: "LEGACY_RUNTIME_SALE",
-      referenceId: `${event.productId}:${data.dataVenda.toISOString()}`,
-      createdAt: data.dataVenda,
-    });
-  }
-
   return lowStockAlerts;
 }
 
@@ -1704,38 +1085,6 @@ export async function getDashboardStats() {
     };
   };
 
-  const readMode = ENV.stockV2ReadMode;
-  if (readMode === "v2") {
-    try {
-      return await getDashboardStatsV2(db);
-    } catch (error) {
-      console.warn("[DashboardStats] leitura V2 falhou, fallback para legado:", error);
-      return await getLegacyStats();
-    }
-  }
-
-  if (readMode === "shadow") {
-    const legacy = await getLegacyStats();
-    try {
-      const v2 = await getDashboardStatsV2(db);
-      const hasDrift =
-        legacy.totalProducts !== v2.totalProducts ||
-        legacy.lowStockCount !== v2.lowStockCount ||
-        legacy.totalItems !== v2.totalItems ||
-        legacy.recentMovements !== v2.recentMovements ||
-        legacy.negativeStockCount !== v2.negativeStockCount;
-      if (hasDrift) {
-        console.warn("[DashboardStats][Shadow] Divergência legado x V2", {
-          legacy,
-          v2,
-        });
-      }
-    } catch (error) {
-      console.warn("[DashboardStats][Shadow] leitura V2 falhou:", error);
-    }
-    return legacy;
-  }
-
   return await getLegacyStats();
 }
 
@@ -1761,27 +1110,15 @@ export async function getTopSellingProducts(startDate: Date, endDate: Date, limi
   const productIds = Array.from(salesByProduct.keys());
   const productsList = await getProductsByIds(productIds);
   const productsMap = new Map(productsList.map((product) => [product.id, product]));
-  const readMode = ENV.stockV2ReadMode;
-  const overlayMap = readMode === "legacy" ? new Map<number, V2OverlayProduct>() : await getV2OverlayProductsByLegacyIds(db, productIds);
-  if (readMode === "shadow" && overlayMap.size !== productIds.length) {
-    console.warn("[TopSelling][Shadow] Divergência de mapeamento legado->V2", {
-      productIds: productIds.length,
-      mapped: overlayMap.size,
-    });
-  }
-  if (readMode === "v2" && overlayMap.size !== productIds.length) {
-    console.warn("[TopSelling][V2] Mapeamento incompleto. Fallback legado.");
-  }
   const topProducts = productIds
     .map((productId) => {
       const product = productsMap.get(productId);
-      const overlay = overlayMap.get(productId);
       if (!product) return null;
       return {
         productId,
-        name: overlay?.name ?? product.name,
-        medida: overlay?.medida ?? product.medida,
-        categoria: overlay?.categoria ?? product.categoria,
+        name: product.name,
+        medida: product.medida,
+        categoria: product.categoria,
         quantidadeVendida: salesByProduct.get(productId) ?? 0,
       };
     })
@@ -1831,23 +1168,13 @@ export async function getSalesByCategory(startDate: Date, endDate: Date) {
   const productIds = Array.from(new Set(vendasPeriodo.map((venda) => venda.productId)));
   const productsList = await getProductsByIds(productIds);
   const productsMap = new Map(productsList.map((product) => [product.id, product]));
-  const readMode = ENV.stockV2ReadMode;
-  const overlayMap = readMode === "legacy" ? new Map<number, V2OverlayProduct>() : await getV2OverlayProductsByLegacyIds(db, productIds);
-  if (readMode === "shadow" && overlayMap.size !== productIds.length) {
-    console.warn("[SalesByCategory][Shadow] Divergência de mapeamento legado->V2", {
-      productIds: productIds.length,
-      mapped: overlayMap.size,
-    });
-  }
 
   const salesByCategory = new Map<string, number>();
   for (const venda of vendasPeriodo) {
     const product = productsMap.get(venda.productId);
     if (product) {
-      const overlay = overlayMap.get(venda.productId);
-      const categoria = overlay?.categoria ?? product.categoria;
-      const current = salesByCategory.get(categoria) || 0;
-      salesByCategory.set(categoria, current + venda.quantidade);
+      const current = salesByCategory.get(product.categoria) || 0;
+      salesByCategory.set(product.categoria, current + venda.quantidade);
     }
   }
   
@@ -1872,23 +1199,13 @@ export async function getSalesByMedida(startDate: Date, endDate: Date) {
   const productIds = Array.from(new Set(vendasPeriodo.map((venda) => venda.productId)));
   const productsList = await getProductsByIds(productIds);
   const productsMap = new Map(productsList.map((product) => [product.id, product]));
-  const readMode = ENV.stockV2ReadMode;
-  const overlayMap = readMode === "legacy" ? new Map<number, V2OverlayProduct>() : await getV2OverlayProductsByLegacyIds(db, productIds);
-  if (readMode === "shadow" && overlayMap.size !== productIds.length) {
-    console.warn("[SalesByMedida][Shadow] Divergência de mapeamento legado->V2", {
-      productIds: productIds.length,
-      mapped: overlayMap.size,
-    });
-  }
 
   const salesByMedida = new Map<string, number>();
   for (const venda of vendasPeriodo) {
     const product = productsMap.get(venda.productId);
     if (product) {
-      const overlay = overlayMap.get(venda.productId);
-      const medida = overlay?.medida ?? product.medida;
-      const current = salesByMedida.get(medida) || 0;
-      salesByMedida.set(medida, current + venda.quantidade);
+      const current = salesByMedida.get(product.medida) || 0;
+      salesByMedida.set(product.medida, current + venda.quantidade);
     }
   }
   
@@ -2027,20 +1344,7 @@ export async function cancelarVenda(vendaId: number, motivo: string, userId: num
   if (!db) throw new Error("Database not available");
   const movementEvent = await cancelarVendaInDb(db, vendaId, motivo, userId);
 
-  if (movementEvent !== null) {
-    await mirrorLegacyMovementToV2({
-      scope: "sales.cancel",
-      productId: movementEvent.productId,
-      movementType: "IN",
-      quantity: movementEvent.quantidade,
-      quantityBefore: movementEvent.beforeQty,
-      quantityAfter: movementEvent.afterQty,
-      reason: `Cancelamento de venda #${vendaId}: ${motivo}`,
-      userId,
-      referenceType: "LEGACY_RUNTIME_CANCEL",
-      referenceId: String(vendaId),
-    });
-  }
+  void movementEvent;
   
   return { success: true };
 }
@@ -2051,20 +1355,7 @@ export async function excluirVenda(vendaId: number, userId: number) {
   if (!db) throw new Error("Database not available");
   const movementEvent = await excluirVendaInDb(db, vendaId, userId);
 
-  if (movementEvent !== null) {
-    await mirrorLegacyMovementToV2({
-      scope: "sales.delete",
-      productId: movementEvent.productId,
-      movementType: "IN",
-      quantity: movementEvent.quantidade,
-      quantityBefore: movementEvent.beforeQty,
-      quantityAfter: movementEvent.afterQty,
-      reason: `Exclusão de venda #${vendaId}`,
-      userId,
-      referenceType: "LEGACY_RUNTIME_DELETE_SALE",
-      referenceId: String(vendaId),
-    });
-  }
+  void movementEvent;
   
   return { success: true };
 }
@@ -2089,8 +1380,6 @@ export async function getVendasRelatorio(filters: {
     db,
     {
       getProductsByIds,
-      getV2OverlayProductsByLegacyIds,
-      readMode: ENV.stockV2ReadMode,
     },
     filters
   );
@@ -2117,21 +1406,18 @@ export async function getEncomendasRelatorio(filters: {
   const productIds = Array.from(new Set(vendasList.map((venda) => venda.productId)));
   const productsList = await getProductsByIds(productIds);
   const productsMap = new Map(productsList.map((product) => [product.id, product]));
-  const readMode = ENV.stockV2ReadMode;
-  const overlayMap = readMode === "legacy" ? new Map<number, V2OverlayProduct>() : await getV2OverlayProductsByLegacyIds(db, productIds);
 
   return vendasList
     .map((venda) => {
       const product = productsMap.get(venda.productId);
-      const overlay = overlayMap.get(venda.productId);
-      const estoqueAtual = overlay?.onHand ?? product?.quantidade ?? 0;
+      const estoqueAtual = product?.quantidade ?? 0;
       if (!product || estoqueAtual >= 0) return null;
       return {
         ...venda,
-        productName: overlay?.name || product.name,
-        medida: overlay?.medida || product.medida,
-        categoria: overlay?.categoria || product.categoria,
-        marca: overlay?.marca || product.marca || null,
+        productName: product.name,
+        medida: product.medida,
+        categoria: product.categoria,
+        marca: product.marca || null,
         estoqueAtual,
       };
     })
@@ -2167,20 +1453,7 @@ export async function editarVenda(
   if (!db) throw new Error("Database connection failed");
   const movementEvent = await editarVendaInDb(db, vendaId, updates, userId);
 
-  if (movementEvent !== null) {
-    await mirrorLegacyMovementToV2({
-      scope: "sales.edit",
-      productId: movementEvent.productId,
-      movementType: movementEvent.movementType,
-      quantity: movementEvent.quantity,
-      quantityBefore: movementEvent.beforeQty,
-      quantityAfter: movementEvent.afterQty,
-      reason: `Ajuste por edição de venda #${vendaId}`,
-      userId,
-      referenceType: "LEGACY_RUNTIME_EDIT_SALE",
-      referenceId: String(vendaId),
-    });
-  }
+  void movementEvent;
   
   return { success: true };
 }
@@ -2206,8 +1479,6 @@ export async function getRankingProdutos(filters: {
     db,
     {
       getProductsByIds,
-      getV2OverlayProductsByLegacyIds,
-      readMode: ENV.stockV2ReadMode,
     },
     filters
   );
@@ -2342,7 +1613,7 @@ export async function deleteMarca(id: number) {
   return { success: true };
 }
 
-// ============ Catálogo V2 Functions ============
+// ============ Catálogo Functions ============
 
 export type CatalogItem = { id: number; nome: string };
 export type CatalogPaymentMethodItem = {
@@ -2366,6 +1637,30 @@ export type CatalogModelItem = {
 
 function normalizeCatalogName(value: string) {
   return value.trim();
+}
+
+function normalizeCatalogProductTypeName(value: string) {
+  return value.trim().toLocaleUpperCase("pt-BR");
+}
+
+function normalizeCatalogBrandName(value: string) {
+  return value.trim().toLocaleUpperCase("pt-BR");
+}
+
+function normalizeCatalogMeasureName(value: string) {
+  return value.trim().toLocaleUpperCase("pt-BR");
+}
+
+function normalizeCatalogModelName(value: string) {
+  return value.trim().toLocaleUpperCase("pt-BR");
+}
+
+function normalizeCatalogPaymentMethodName(value: string) {
+  return value.trim().toLocaleUpperCase("pt-BR");
+}
+
+function normalizeCatalogSellerName(value: string) {
+  return value.trim().toLocaleUpperCase("pt-BR");
 }
 
 async function ensureCatalogPaymentMethodsTable() {
@@ -2463,40 +1758,43 @@ async function createCatalogItem(
   if (!normalized) throw new Error("Nome é obrigatório");
 
   if (tableName === "catalog_brands") {
+    const normalizedBrand = normalizeCatalogBrandName(nome);
     await db.execute(sql`
       INSERT INTO catalog_brands (name)
-      VALUES (${normalized})
+      VALUES (${normalizedBrand})
       ON DUPLICATE KEY UPDATE name = VALUES(name)
     `);
-    const id = await queryFirstId(db, sql`SELECT id FROM catalog_brands WHERE name = ${normalized} LIMIT 1`, "id");
-    return { id, nome: normalized };
+    const id = await queryFirstId(db, sql`SELECT id FROM catalog_brands WHERE name = ${normalizedBrand} LIMIT 1`, "id");
+    return { id, nome: normalizedBrand };
   }
 
   if (tableName === "catalog_measures") {
+    const normalizedMeasure = normalizeCatalogMeasureName(nome);
     await db.execute(sql`
       INSERT INTO catalog_measures (code, description)
-      VALUES (${normalized}, ${normalized})
+      VALUES (${normalizedMeasure}, ${normalizedMeasure})
       ON DUPLICATE KEY UPDATE description = VALUES(description)
     `);
     const id = await queryFirstId(
       db,
-      sql`SELECT id FROM catalog_measures WHERE description = ${normalized} LIMIT 1`,
+      sql`SELECT id FROM catalog_measures WHERE description = ${normalizedMeasure} LIMIT 1`,
       "id"
     );
-    return { id, nome: normalized };
+    return { id, nome: normalizedMeasure };
   }
 
+  const normalizedType = normalizeCatalogProductTypeName(nome);
   await db.execute(sql`
     INSERT INTO catalog_product_types (code, name)
-    VALUES (${normalized}, ${normalized})
+    VALUES (${normalizedType}, ${normalizedType})
     ON DUPLICATE KEY UPDATE name = VALUES(name)
   `);
   const id = await queryFirstId(
     db,
-    sql`SELECT id FROM catalog_product_types WHERE name = ${normalized} LIMIT 1`,
+    sql`SELECT id FROM catalog_product_types WHERE name = ${normalizedType} LIMIT 1`,
     "id"
   );
-  return { id, nome: normalized };
+  return { id, nome: normalizedType };
 }
 
 async function updateCatalogItem(
@@ -2511,17 +1809,20 @@ async function updateCatalogItem(
   if (!normalized) throw new Error("Nome é obrigatório");
 
   if (tableName === "catalog_brands") {
-    await db.execute(sql`UPDATE catalog_brands SET name = ${normalized} WHERE id = ${id}`);
-    return { id, nome: normalized };
+    const normalizedBrand = normalizeCatalogBrandName(nome);
+    await db.execute(sql`UPDATE catalog_brands SET name = ${normalizedBrand} WHERE id = ${id}`);
+    return { id, nome: normalizedBrand };
   }
 
   if (tableName === "catalog_measures") {
-    await db.execute(sql`UPDATE catalog_measures SET description = ${normalized}, code = ${normalized} WHERE id = ${id}`);
-    return { id, nome: normalized };
+    const normalizedMeasure = normalizeCatalogMeasureName(nome);
+    await db.execute(sql`UPDATE catalog_measures SET description = ${normalizedMeasure}, code = ${normalizedMeasure} WHERE id = ${id}`);
+    return { id, nome: normalizedMeasure };
   }
 
-  await db.execute(sql`UPDATE catalog_product_types SET name = ${normalized}, code = ${normalized} WHERE id = ${id}`);
-  return { id, nome: normalized };
+  const normalizedType = normalizeCatalogProductTypeName(nome);
+  await db.execute(sql`UPDATE catalog_product_types SET name = ${normalizedType}, code = ${normalizedType} WHERE id = ${id}`);
+  return { id, nome: normalizedType };
 }
 
 async function deleteCatalogItem(
@@ -2538,9 +1839,19 @@ async function deleteCatalogItem(
   };
 
   if (tableName === "catalog_brands") {
-    const productsUsing = await getCount(
-      sql`SELECT COUNT(*) AS count FROM products_v2 WHERE brand_id = ${id} AND is_archived = 0`
-    );
+    const brandResult = await db.execute(sql`SELECT name FROM catalog_brands WHERE id = ${id} LIMIT 1`);
+    const brandRows = extractRows(brandResult);
+    const brandName = String(brandRows[0]?.name ?? "").trim();
+    const productsUsing = brandName
+      ? await getCount(
+          sql`
+            SELECT COUNT(*) AS count
+            FROM products
+            WHERE COALESCE(arquivado, 0) = 0
+              AND TRIM(COALESCE(NULLIF(marca, ''), 'SEM_MARCA')) = ${brandName}
+          `
+        )
+      : 0;
     if (productsUsing > 0) {
       throw new Error(`Não é possível excluir: esta marca está vinculada a ${productsUsing} produto(s).`);
     }
@@ -2552,18 +1863,38 @@ async function deleteCatalogItem(
 
     await db.execute(sql`DELETE FROM catalog_brands WHERE id = ${id}`);
   } else if (tableName === "catalog_measures") {
-    const productsUsing = await getCount(
-      sql`SELECT COUNT(*) AS count FROM products_v2 WHERE measure_id = ${id} AND is_archived = 0`
-    );
+    const measureResult = await db.execute(sql`SELECT description FROM catalog_measures WHERE id = ${id} LIMIT 1`);
+    const measureRows = extractRows(measureResult);
+    const measureName = String(measureRows[0]?.description ?? "").trim();
+    const productsUsing = measureName
+      ? await getCount(
+          sql`
+            SELECT COUNT(*) AS count
+            FROM products
+            WHERE COALESCE(arquivado, 0) = 0
+              AND LOWER(TRIM(medida)) = ${measureName.toLowerCase()}
+          `
+        )
+      : 0;
     if (productsUsing > 0) {
       throw new Error(`Não é possível excluir: esta medida está vinculada a ${productsUsing} produto(s).`);
     }
 
     await db.execute(sql`DELETE FROM catalog_measures WHERE id = ${id}`);
   } else {
-    const productsUsing = await getCount(
-      sql`SELECT COUNT(*) AS count FROM products_v2 WHERE product_type_id = ${id} AND is_archived = 0`
-    );
+    const productTypeResult = await db.execute(sql`SELECT name FROM catalog_product_types WHERE id = ${id} LIMIT 1`);
+    const productTypeRows = extractRows(productTypeResult);
+    const productTypeName = String(productTypeRows[0]?.name ?? "").trim();
+    const productsUsing = productTypeName
+      ? await getCount(
+          sql`
+            SELECT COUNT(*) AS count
+            FROM products
+            WHERE COALESCE(arquivado, 0) = 0
+              AND TRIM(categoria) = ${productTypeName}
+          `
+        )
+      : 0;
     if (productsUsing > 0) {
       throw new Error(`Não é possível excluir: este tipo está vinculado a ${productsUsing} produto(s).`);
     }
@@ -2665,7 +1996,7 @@ export async function createCatalogModel(input: {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const normalized = normalizeCatalogName(input.nome);
+  const normalized = normalizeCatalogModelName(input.nome);
   if (!normalized) throw new Error("Nome é obrigatório");
 
   await db.execute(sql`
@@ -2697,7 +2028,7 @@ export async function updateCatalogModel(
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const normalized = normalizeCatalogName(input.nome);
+  const normalized = normalizeCatalogModelName(input.nome);
   if (!normalized) throw new Error("Nome é obrigatório");
 
   await db.execute(sql`
@@ -2717,9 +2048,18 @@ export async function deleteCatalogModel(id: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const result = await db.execute(
-    sql`SELECT COUNT(*) AS count FROM products_v2 WHERE model_id = ${id} AND is_archived = 0`
-  );
+  const result = await db.execute(sql`
+    SELECT COUNT(*) AS count
+    FROM catalog_models cm
+    INNER JOIN catalog_brands cb ON cb.id = cm.brand_id
+    INNER JOIN catalog_product_types cpt ON cpt.id = cm.product_type_id
+    INNER JOIN products p
+      ON TRIM(p.name) = cm.name
+     AND TRIM(COALESCE(NULLIF(p.marca, ''), 'SEM_MARCA')) = cb.name
+     AND TRIM(p.categoria) = cpt.name
+    WHERE cm.id = ${id}
+      AND COALESCE(p.arquivado, 0) = 0
+  `);
   const rows = extractRows(result);
   const productsUsing = Number(rows[0]?.count ?? 0);
   if (productsUsing > 0) {
@@ -2855,14 +2195,88 @@ export async function findActiveCatalogPaymentMethodByNameOrCode(
   };
 }
 
-export async function createCatalogPaymentMethod(input: { codigo: string; nome: string; categoria: string }) {
+function normalizePaymentMethodLookup(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function toPaymentMethodCodePart(value: string): string {
+  return value
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_+/g, "_");
+}
+
+function buildCatalogPaymentMethodCode(nome: string, categoria: string): string {
+  const normalizedName = normalizePaymentMethodLookup(nome);
+  const normalizedCategory = normalizePaymentMethodLookup(categoria);
+
+  if (!normalizedName) return "PAGAMENTO";
+  if (normalizedName === "pix") return "PIX";
+  if (normalizedName.includes("receber na entrega")) return "RECEBER_NA_ENTREGA";
+  if (normalizedName.includes("boleto")) return "BOLETO";
+  if (normalizedName.includes("transferencia") || normalizedName.includes("ted") || normalizedName.includes("doc")) {
+    return "TRANSFERENCIA";
+  }
+  if (normalizedName.includes("dinheiro") || normalizedName.includes("especie")) return "DINHEIRO";
+  if (normalizedName.includes("multiplo") || normalizedName.includes("misto") || normalizedName.includes("combinado")) {
+    return "MULTIPLO";
+  }
+
+  if (normalizedName.includes("cartao") && normalizedName.includes("credito")) {
+    const suffix = toPaymentMethodCodePart(
+      normalizedName
+        .replace(/\bcartao\b/g, " ")
+        .replace(/\bde\b/g, " ")
+        .replace(/\bcredito\b/g, " ")
+        .trim()
+    );
+    return suffix ? `CARTAO_CREDITO_${suffix}` : "CARTAO_CREDITO";
+  }
+
+  if (normalizedName.includes("cartao") && normalizedName.includes("debito")) {
+    const suffix = toPaymentMethodCodePart(
+      normalizedName
+        .replace(/\bcartao\b/g, " ")
+        .replace(/\bde\b/g, " ")
+        .replace(/\bdebito\b/g, " ")
+        .trim()
+    );
+    return suffix ? `CARTAO_DEBITO_${suffix}` : "CARTAO_DEBITO";
+  }
+
+  const categoryCode = toPaymentMethodCodePart(normalizedCategory);
+  const nameCode = toPaymentMethodCodePart(nome);
+  if (!categoryCode) return nameCode || "PAGAMENTO";
+  if (!nameCode || nameCode === categoryCode) return categoryCode;
+
+  const mergedTokens = Array.from(
+    new Set(`${categoryCode}_${nameCode}`.split("_").filter(Boolean))
+  );
+  return mergedTokens.join("_").slice(0, 80) || "PAGAMENTO";
+}
+
+export async function createCatalogPaymentMethod(input: { codigo?: string; nome: string; categoria: string }) {
   const db = await ensureCatalogPaymentMethodsTable();
   if (!db) throw new Error("Database not available");
 
-  const codigo = input.codigo.trim().toUpperCase();
-  const nome = input.nome.trim();
+  const nome = normalizeCatalogPaymentMethodName(input.nome);
   const categoria = input.categoria.trim();
-  if (!codigo || !nome || !categoria) throw new Error("Código, nome e categoria são obrigatórios.");
+  const codigo = (input.codigo?.trim().toUpperCase() || buildCatalogPaymentMethodCode(nome, categoria)).slice(0, 80);
+  if (!codigo || !nome || !categoria) throw new Error("Nome e categoria são obrigatórios.");
+
+  const existing = await findActiveCatalogPaymentMethodByNameOrCode(nome);
+  if (existing) {
+    throw new Error("Já existe uma forma de pagamento cadastrada com esse nome ou código.");
+  }
 
   await db.execute(sql`
     INSERT INTO catalog_payment_methods (code, name, category)
@@ -2883,23 +2297,45 @@ export async function createCatalogPaymentMethod(input: { codigo: string; nome: 
 
 export async function updateCatalogPaymentMethod(
   id: number,
-  input: { codigo: string; nome: string; categoria: string }
+  input: { codigo?: string; nome: string; categoria: string }
 ) {
   const db = await ensureCatalogPaymentMethodsTable();
   if (!db) throw new Error("Database not available");
 
-  const codigo = input.codigo.trim().toUpperCase();
-  const nome = input.nome.trim();
+  const nome = normalizeCatalogPaymentMethodName(input.nome);
   const categoria = input.categoria.trim();
-  if (!codigo || !nome || !categoria) throw new Error("Código, nome e categoria são obrigatórios.");
+  if (!nome || !categoria) throw new Error("Nome e categoria são obrigatórios.");
 
-  await db.execute(sql`
-    UPDATE catalog_payment_methods
-    SET code = ${codigo}, name = ${nome}, category = ${categoria}, updated_at = CURRENT_TIMESTAMP
+  const existing = await findActiveCatalogPaymentMethodByNameOrCode(nome);
+  if (existing && existing.id !== id) {
+    throw new Error("Já existe uma forma de pagamento cadastrada com esse nome ou código.");
+  }
+
+  const codigo = input.codigo?.trim().toUpperCase();
+  if (codigo) {
+    await db.execute(sql`
+      UPDATE catalog_payment_methods
+      SET code = ${codigo}, name = ${nome}, category = ${categoria}, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ${id}
+    `);
+  } else {
+    await db.execute(sql`
+      UPDATE catalog_payment_methods
+      SET name = ${nome}, category = ${categoria}, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ${id}
+    `);
+  }
+
+  const currentResult = await db.execute(sql`
+    SELECT code AS codigo
+    FROM catalog_payment_methods
     WHERE id = ${id}
+    LIMIT 1
   `);
+  const currentRows = extractRows(currentResult);
+  const currentRow = currentRows[0];
 
-  return { id, codigo, nome, categoria };
+  return { id, codigo: String(currentRow?.codigo ?? codigo ?? ""), nome, categoria };
 }
 
 export async function deleteCatalogPaymentMethod(id: number) {
@@ -2992,7 +2428,7 @@ export async function createCatalogSeller(input: { nome: string }) {
   const db = await ensureCatalogSellersTable();
   if (!db) throw new Error("Database not available");
 
-  const nome = input.nome.trim();
+  const nome = normalizeCatalogSellerName(input.nome);
   if (!nome) throw new Error("Nome é obrigatório.");
 
   await db.execute(sql`
@@ -3014,7 +2450,7 @@ export async function updateCatalogSeller(id: number, input: { nome: string }) {
   const db = await ensureCatalogSellersTable();
   if (!db) throw new Error("Database not available");
 
-  const nome = input.nome.trim();
+  const nome = normalizeCatalogSellerName(input.nome);
   if (!nome) throw new Error("Nome é obrigatório.");
 
   await db.execute(sql`

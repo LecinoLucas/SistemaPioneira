@@ -9,11 +9,17 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Input } from "@/components/ui/input";
 import { ArrowUpCircle, ArrowDownCircle, History as HistoryIcon, ShoppingCart, XCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { useState } from "react";
 import { toast } from "sonner";
+
+function getImportedPdfLabel(observacoes?: string | null) {
+  const match = observacoes?.match(/^Importado de PDF:\s*(.+)$/i);
+  return match?.[1]?.trim() || null;
+}
 
 export default function History() {
   const { user } = useAuth();
@@ -32,6 +38,21 @@ export default function History() {
     page: currentPage, 
     limit: 20,
     tipoTransacao: filterTipo === "todos" ? undefined : filterTipo
+  }, {
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+
+  const [importHistoryPage, setImportHistoryPage] = useState(1);
+  const [importHistorySearchInput, setImportHistorySearchInput] = useState("");
+  const [importHistorySearch, setImportHistorySearch] = useState("");
+  const {
+    data: importHistoryData,
+    isLoading: loadingImportHistory,
+  } = trpc.vendas.importHistory.useQuery({
+    page: importHistoryPage,
+    pageSize: 20,
+    search: importHistorySearch || undefined,
   }, {
     staleTime: 30_000,
     refetchOnWindowFocus: false,
@@ -133,10 +154,13 @@ export default function History() {
       </div>
 
       <Tabs defaultValue="vendas" className="w-full">
-        <TabsList className="grid w-full max-w-md grid-cols-2">
+        <TabsList className="grid w-full max-w-2xl grid-cols-3">
           <TabsTrigger value="vendas">
             <ShoppingCart className="h-4 w-4 mr-2" />
             Vendas
+          </TabsTrigger>
+          <TabsTrigger value="importacoes">
+            PDFs
           </TabsTrigger>
           <TabsTrigger value="movimentacoes">
             <HistoryIcon className="h-4 w-4 mr-2" />
@@ -210,6 +234,14 @@ export default function History() {
                               <span className="text-xs text-muted-foreground">
                                 {venda.productMedida} - {venda.productCategoria}
                               </span>
+                              {getImportedPdfLabel(venda.observacoes) && (
+                                <>
+                                  <br />
+                                  <span className="text-xs text-emerald-700">
+                                    PDF: {getImportedPdfLabel(venda.observacoes)}
+                                  </span>
+                                </>
+                              )}
                             </TableCell>
                             <TableCell>
                               <span className="font-semibold">{venda.quantidade}</span>
@@ -269,7 +301,7 @@ export default function History() {
                         ))
                       ) : (
                         <TableRow>
-                          <TableCell colSpan={isAdmin ? 6 : 5} className="text-center text-muted-foreground py-8">
+                          <TableCell colSpan={isAdmin ? 7 : 6} className="text-center text-muted-foreground py-8">
                             Nenhuma venda registrada
                           </TableCell>
                         </TableRow>
@@ -299,6 +331,123 @@ export default function History() {
                           size="sm"
                           onClick={() => setCurrentPage(p => Math.min(vendasData.totalPages, p + 1))}
                           disabled={currentPage === vendasData.totalPages}
+                        >
+                          Próximo
+                          <ChevronRight className="h-4 w-4 ml-1" />
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="importacoes">
+          <Card className="border-border shadow-sm">
+            <CardHeader>
+              <CardTitle>Importações PDF</CardTitle>
+              <CardDescription>
+                Log dos PDFs já lançados. Esse histórico é o que impede uma importação duplicada.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Input
+                  value={importHistorySearchInput}
+                  onChange={(e) => setImportHistorySearchInput(e.target.value)}
+                  placeholder="Buscar por arquivo, cliente, documento ou vendedor"
+                />
+                <Button
+                  type="button"
+                  onClick={() => {
+                    setImportHistoryPage(1);
+                    setImportHistorySearch(importHistorySearchInput.trim());
+                  }}
+                >
+                  Buscar
+                </Button>
+              </div>
+
+              {loadingImportHistory ? (
+                <div className="flex items-center justify-center h-48">
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+                </div>
+              ) : (
+                <>
+                  <div className="overflow-auto rounded-md border">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Data do Lançamento</TableHead>
+                          <TableHead>Arquivo</TableHead>
+                          <TableHead>Cliente</TableHead>
+                          <TableHead>Vendedor</TableHead>
+                          <TableHead>Data da Venda</TableHead>
+                          <TableHead>Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {importHistoryData && importHistoryData.items.length > 0 ? (
+                          importHistoryData.items.map((item) => (
+                            <TableRow key={item.id}>
+                              <TableCell className="font-medium">
+                                {format(new Date(item.createdAt), "dd/MM/yyyy HH:mm", { locale: ptBR })}
+                              </TableCell>
+                              <TableCell>
+                                <div className="font-medium">{item.fileName}</div>
+                                <div className="text-xs text-muted-foreground">
+                                  {item.documentNumber ? `Doc ${item.documentNumber}` : "Sem documento"}
+                                </div>
+                              </TableCell>
+                              <TableCell>{item.nomeCliente || "-"}</TableCell>
+                              <TableCell>{item.vendedor || "-"}</TableCell>
+                              <TableCell>
+                                {item.dataVenda
+                                  ? format(new Date(item.dataVenda), "dd/MM/yyyy", { locale: ptBR })
+                                  : "-"}
+                              </TableCell>
+                              <TableCell>
+                                {item.status === "success" ? (
+                                  <Badge variant="default" className="bg-green-600">Lançado</Badge>
+                                ) : (
+                                  <Badge variant="destructive">Falhou</Badge>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        ) : (
+                          <TableRow>
+                            <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                              Nenhuma importação PDF encontrada
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+
+                  {importHistoryData && importHistoryData.totalPages > 1 && (
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <p className="text-sm text-muted-foreground">
+                        Mostrando {((importHistoryPage - 1) * 20) + 1} a {Math.min(importHistoryPage * 20, importHistoryData.total)} de {importHistoryData.total} importação(ões)
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setImportHistoryPage((p) => Math.max(1, p - 1))}
+                          disabled={importHistoryPage === 1}
+                        >
+                          <ChevronLeft className="h-4 w-4 mr-1" />
+                          Anterior
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setImportHistoryPage((p) => Math.min(importHistoryData.totalPages, p + 1))}
+                          disabled={importHistoryPage === importHistoryData.totalPages}
                         >
                           Próximo
                           <ChevronRight className="h-4 w-4 ml-1" />

@@ -1,7 +1,6 @@
 import { STOCK_AUDIT_ACTION } from "@shared/stock-governance";
 import * as db from "../../../../db";
 import { notifyOwner } from "../../../../_core/notification";
-import { ENV } from "../../../../_core/env";
 import type { IAuditGateway } from "../../../audit/domain/contracts/audit.gateway";
 import { generateEncomendasRelatorioPDF, generateVendasRelatorioPDF } from "../../../../pdfExportReports";
 import { PdfSalesImportService } from "./pdf-sales-import.service";
@@ -40,17 +39,188 @@ function isSellerTokenMatch(candidate: string, normalizedSeller: string) {
   return parts.some((part) => normalizedSeller.includes(part));
 }
 
+function normalizePaymentName(value: string): string {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[_-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function resolveCatalogPaymentMethod(
+  value: string,
+  methods: Array<{ codigo: string; nome: string }>
+) {
+  const normalized = normalizePaymentName(value);
+  if (!normalized) return null;
+
+  const direct = methods.find((item) => {
+    const name = normalizePaymentName(item.nome);
+    const code = normalizePaymentName(item.codigo);
+    return name === normalized || code === normalized;
+  });
+  if (direct) return direct.nome;
+
+  const aliases = [
+    normalized.includes("receber na entrega") ? "receber na entrega" : null,
+    normalized === "pix" ? "pix" : null,
+    normalized.includes("credito") ? "credito" : null,
+    normalized.includes("debito") ? "debito" : null,
+    normalized.includes("boleto") ? "boleto" : null,
+    normalized.includes("transferencia") || normalized.includes("ted") ? "transferencia" : null,
+    normalized.includes("dinheiro") || normalized.includes("especie") ? "dinheiro" : null,
+    normalized.includes("multiplo") || normalized.includes("misto") ? "multiplo" : null,
+  ].filter((item): item is string => Boolean(item));
+
+  const semantic = methods.find((item) => {
+    const name = normalizePaymentName(item.nome);
+    const code = normalizePaymentName(item.codigo);
+    return aliases.some((alias) => name.includes(alias) || code.includes(alias));
+  });
+  return semantic?.nome ?? null;
+}
+
+export function splitCombinedPaymentMethods(value: string) {
+  return value
+    .split(/\s+\+\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
 export class VendasService {
   private readonly pdfImportService = new PdfSalesImportService();
 
   constructor(private readonly auditGateway: IAuditGateway) {}
 
-  private async getProductsLiteForImport() {
-    const mapLegacy = (items: Array<{ id: number; name: string; medida: string; quantidade: number }>) =>
+  private async validateImportedDrafts<T extends {
+    fileHash: string;
+    fileName: string;
+    documentNumber: string | null;
+    cliente: string | null;
+    dataVenda: string | null;
+    itens: Array<{
+      productId: number | null;
+      medida: string | null;
+      confidence: number;
+    }>;
+    warnings: string[];
+    validationWarnings: string[];
+    validationErrors: string[];
+  }>(drafts: T[]): Promise<T[]> {
+    const fileHashCounts = new Map<string, number>();
+    const documentCounts = new Map<string, number>();
+
+    for (const draft of drafts) {
+      fileHashCounts.set(draft.fileHash, (fileHashCounts.get(draft.fileHash) ?? 0) + 1);
+      const documentKey = draft.documentNumber?.trim();
+      if (documentKey) {
+        documentCounts.set(documentKey, (documentCounts.get(documentKey) ?? 0) + 1);
+      }
+    }
+
+    await Promise.all(
+      drafts.map(async (draft) => {
+        draft.validationWarnings = [];
+        draft.validationErrors = [];
+
+        const duplicateHistory = await db.findImportedSaleByFileHashOrDocument(
+          draft.fileHash,
+          draft.documentNumber
+        );
+
+        if (duplicateHistory) {
+          draft.validationErrors.push(
+            `Importação bloqueada: este arquivo já foi lançado antes (${duplicateHistory.fileName}${duplicateHistory.documentNumber ? `, doc ${duplicateHistory.documentNumber}` : ""}).`
+          );
+        }
+
+        if ((fileHashCounts.get(draft.fileHash) ?? 0) > 1) {
+          draft.validationErrors.push("Importação bloqueada: o mesmo arquivo apareceu mais de uma vez neste lote.");
+        }
+
+        const documentKey = draft.documentNumber?.trim();
+        if (documentKey && (documentCounts.get(documentKey) ?? 0) > 1) {
+          draft.validationErrors.push(
+            `Importação bloqueada: o documento ${documentKey} apareceu mais de uma vez neste lote.`
+          );
+        }
+
+        if (draft.itens.length === 0) {
+          draft.validationErrors.push("Nenhum item de venda foi encontrado no PDF.");
+          return;
+        }
+
+        const duplicatedProductIds = new Map<number, number[]>();
+        draft.itens.forEach((item, index) => {
+          if (item.productId == null) return;
+          const current = duplicatedProductIds.get(item.productId) ?? [];
+          current.push(index);
+          duplicatedProductIds.set(item.productId, current);
+        });
+
+        let autoMatchDuplicatesResolved = false;
+        duplicatedProductIds.forEach((indexes) => {
+          if (indexes.length < 2) return;
+          autoMatchDuplicatesResolved = true;
+          for (const index of indexes) {
+            draft.itens[index] = {
+              ...draft.itens[index],
+              productId: null,
+              medida: null,
+            };
+          }
+        });
+
+        if (autoMatchDuplicatesResolved) {
+          draft.validationWarnings.push(
+            "Foram encontrados vínculos automáticos duplicados no mesmo PDF. Esses itens foram liberados para revisão manual."
+          );
+        }
+
+        const autoLinkedCount = draft.itens.filter((item) => item.productId != null).length;
+        const reviewCount = draft.itens.filter((item) => item.productId == null).length;
+        const lowConfidenceCount = draft.itens.filter(
+          (item) => item.productId != null && item.confidence < 0.9
+        ).length;
+
+        if (autoLinkedCount === 0) {
+          draft.validationWarnings.push(
+            "Nenhum item foi vinculado automaticamente. Revise manualmente os produtos do PDF."
+          );
+        } else if (reviewCount > 0) {
+          draft.validationWarnings.push(
+            `${reviewCount} item(ns) precisam de revisão manual antes do lançamento.`
+          );
+        }
+
+        if (lowConfidenceCount > 0) {
+          draft.validationWarnings.push(
+            `${lowConfidenceCount} item(ns) foram vinculados com confiança média. Revise antes de lançar.`
+          );
+        }
+
+        if (!draft.cliente?.trim()) {
+          draft.validationWarnings.push("Cliente não foi confirmado automaticamente.");
+        }
+
+        if (!draft.dataVenda) {
+          draft.validationWarnings.push("Data da venda não foi identificada automaticamente.");
+        }
+      })
+    );
+
+    return drafts;
+  }
+
+  async getProductsLiteForImport() {
+    const mapLegacy = (items: Array<{ id: number; name: string; medida: string; marca: string | null; quantidade: number }>) =>
       items.map((product) => ({
         id: product.id,
         name: product.name,
         medida: product.medida,
+        marca: product.marca,
         quantidade: product.quantidade,
       }));
 
@@ -62,40 +232,7 @@ export class VendasService {
     const legacyIncludingArchived = await db.getAllProducts(undefined, undefined, false, true);
     const legacyArchivedLite = mapLegacy(legacyIncludingArchived.items);
     if (legacyArchivedLite.length > 0) return legacyArchivedLite;
-
-    if (ENV.stockV2ReadMode === "legacy") return legacyLite;
-
-    const v2 = await db.listProductsV2ReadModel({
-      onlyActiveForSales: false,
-      includeArchived: false,
-      page: 1,
-      pageSize: 5000,
-    });
-    const v2Lite = v2.items
-      .filter((item) => item.id != null)
-      .map((item) => ({
-        id: Number(item.id),
-        name: item.name,
-        medida: item.medida,
-        quantidade: item.quantidade,
-      }));
-    if (v2Lite.length > 0) return v2Lite;
-
-    const v2IncludingArchived = await db.listProductsV2ReadModel({
-      onlyActiveForSales: false,
-      includeArchived: true,
-      page: 1,
-      pageSize: 5000,
-    });
-
-    return v2IncludingArchived.items
-      .filter((item) => item.id != null)
-      .map((item) => ({
-        id: Number(item.id),
-        name: item.name,
-        medida: item.medida,
-        quantidade: item.quantidade,
-      }));
+    return legacyLite;
   }
 
   private async resolveSellerOrThrow(vendedor?: string) {
@@ -103,7 +240,7 @@ export class VendasService {
     const sellers = await db.getAllCatalogSellers();
     if (!sellers.length) {
       throw new DomainError(
-        "Não há vendedores cadastrados no catálogo. Cadastre ao menos um vendedor antes de registrar vendas.",
+        `Nenhum vendedor está cadastrado no catálogo. Cadastre os vendedores antes de lançar a venda.`,
         "BAD_REQUEST"
       );
     }
@@ -128,28 +265,43 @@ export class VendasService {
         "BAD_REQUEST"
       );
     }
+    const paymentParts = splitCombinedPaymentMethods(formaPagamento);
+    if (paymentParts.length === 0) {
+      throw new DomainError(
+        "Informe a forma de pagamento da venda usando um item cadastrado no catálogo.",
+        "BAD_REQUEST"
+      );
+    }
     const paymentMethods = await db.getAllCatalogPaymentMethods();
     if (!paymentMethods.length) {
       throw new DomainError(
-        "Não há formas de pagamento cadastradas no catálogo. Cadastre ao menos uma forma antes de registrar vendas.",
+        "Nenhuma forma de pagamento está cadastrada no catálogo. Cadastre as formas de pagamento antes de lançar a venda.",
         "BAD_REQUEST"
       );
     }
-
-    const resolved = await db.findActiveCatalogPaymentMethodByNameOrCode(formaPagamento);
-    if (!resolved) {
-      throw new DomainError(
-        `Forma de pagamento "${formaPagamento}" não está cadastrada no catálogo de categorias.`,
-        "BAD_REQUEST"
-      );
+    const resolvedParts: string[] = [];
+    for (const part of paymentParts) {
+      const resolvedName =
+        resolveCatalogPaymentMethod(part, paymentMethods) ??
+        (await db.findActiveCatalogPaymentMethodByNameOrCode(part))?.nome ??
+        null;
+      if (!resolvedName) {
+        throw new DomainError(
+          `Forma de pagamento "${part}" não está cadastrada no catálogo de categorias.`,
+          "BAD_REQUEST"
+        );
+      }
+      resolvedParts.push(resolvedName);
     }
-    return resolved.nome;
+    return Array.from(new Set(resolvedParts)).join(" + ");
   }
 
   async importFromFolder(input: { folderPath?: string; maxFiles?: number }) {
     const productsLite = await this.getProductsLiteForImport();
 
-    const drafts = await this.pdfImportService.parseFolder(input, productsLite);
+    const drafts = await this.validateImportedDrafts(
+      await this.pdfImportService.parseFolder(input, productsLite)
+    );
     if (productsLite.length === 0) {
       for (const draft of drafts) {
         draft.warnings.push("Catálogo de produtos vazio para vinculação automática. Verifique o modo de leitura do estoque.");
@@ -171,7 +323,9 @@ export class VendasService {
 
     const productsLite = await this.getProductsLiteForImport();
 
-    const drafts = await this.pdfImportService.parseUploadedFiles(input.files, productsLite);
+    const drafts = await this.validateImportedDrafts(
+      await this.pdfImportService.parseUploadedFiles(input.files, productsLite)
+    );
     if (productsLite.length === 0) {
       for (const draft of drafts) {
         draft.warnings.push("Catálogo de produtos vazio para vinculação automática. Verifique o modo de leitura do estoque.");
@@ -206,6 +360,25 @@ export class VendasService {
       reviewNote?: string;
     };
   }) {
+    const productIds = input.items.map((item) => item.productId);
+    if (new Set(productIds).size !== productIds.length) {
+      throw new DomainError(
+        "Produtos duplicados detectados nesta importação. Cada item do PDF deve apontar para um produto diferente.",
+        "BAD_REQUEST"
+      );
+    }
+
+    const linkedProducts = await db.getProductsByIds(productIds);
+    const outOfStockProducts = linkedProducts.filter((product) => product.quantidade <= 0);
+    if (outOfStockProducts.length > 0) {
+      throw new DomainError(
+        `Importação bloqueada: produto(s) sem estoque no momento do lançamento: ${outOfStockProducts
+          .map((product) => `${product.name} (${product.medida})`)
+          .join(", ")}.`,
+        "BAD_REQUEST"
+      );
+    }
+
     const duplicate = await db.findImportedSaleByFileHashOrDocument(
       input.importMeta.fileHash,
       input.importMeta.documentNumber

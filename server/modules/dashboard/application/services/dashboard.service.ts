@@ -54,14 +54,6 @@ export class DashboardService {
     );
   }
 
-  async v2Health() {
-    return appCache.getOrSet(
-      "dashboard:v2_health",
-      () => db.getV2HealthSnapshot(),
-      CACHE_TTL.SHORT
-    );
-  }
-
   /** Call this after any sale/stock change so the dashboard doesn't serve stale data. */
   invalidate() {
     appCache.invalidatePrefix("dashboard:");

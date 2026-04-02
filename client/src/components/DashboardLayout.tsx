@@ -1,7 +1,6 @@
 import { SCREEN_CATALOG, type ScreenPath } from "@shared/access-governance";
 import { useAuth } from "@/features/auth/hooks/useAuth";
 import { useAccessControl } from "@/features/auth/hooks/useAccessControl";
-import { trpc } from "@/lib/trpc";
 import { BrandLogo } from "@/components/BrandLogo";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -152,12 +151,6 @@ function DashboardLayoutContent({
   const menuItems = useMemo(() => getMenuItems(canAccessPath), [canAccessPath]);
   const activeMenuItem = useMemo(() => menuItems.find(item => item.path === location), [menuItems, location]);
   const isMobile = useIsMobile();
-  const canReadV2Health = user.role === "admin" || user.role === "gerente";
-  const { data: v2Health } = trpc.dashboard.v2Health.useQuery(undefined, {
-    enabled: canReadV2Health,
-    staleTime: 15_000,
-    refetchOnWindowFocus: false,
-  });
 
   useEffect(() => {
     if (isCollapsed) {
@@ -313,11 +306,6 @@ function DashboardLayoutContent({
                 <Badge variant="secondary" className="capitalize">
                   {user.role}
                 </Badge>
-                {canReadV2Health && v2Health?.readMode && (
-                  <Badge variant={v2Health.readMode === "v2" ? "default" : "outline"}>
-                    V2: {v2Health.readMode}
-                  </Badge>
-                )}
                 <Badge variant="outline" className="hidden md:inline-flex">
                   Atalho / para buscar
                 </Badge>

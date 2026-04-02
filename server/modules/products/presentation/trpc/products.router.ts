@@ -13,19 +13,7 @@ import { toTrpcError } from "../../../shared/utils/trpc-error";
 
 const productsService = new ProductsService(new FileAuditGateway());
 
-const categorySchema = z.enum([
-  "Colchões",
-  "Roupas de Cama",
-  "Pillow Top",
-  "Travesseiros",
-  "Cabeceiras",
-  "Box Baú",
-  "Box Premium",
-  "Box Tradicional",
-  "Acessórios",
-  "Bicamas",
-  "Camas",
-]);
+const categorySchema = z.string().trim().min(1).max(60);
 const productStatusSchema = z.enum(["ATIVO", "INATIVO", "ARQUIVADO"]);
 
 export const productsRouter = router({
@@ -277,6 +265,35 @@ export const productsRouter = router({
     .input(z.object({ productId: z.number() }))
     .query(async ({ input }) => {
       return await productsService.priceHistory(input.productId);
+    }),
+
+  createBatch: managerOrAdminProcedure
+    .use(withActionPermission("action:products.manage"))
+    .input(
+      z.object({
+        name: z.string().min(1),
+        marca: z.string().optional(),
+        categoria: categorySchema,
+        medidas: z.array(z.string().min(1)).min(1).max(30),
+        quantidade: z.number().int().min(0),
+        estoqueMinimo: z.number().int().min(0).default(3),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      try {
+        return await productsService.createBatch(
+          {
+            id: ctx.user.id,
+            email: ctx.user.email,
+            role: ctx.user.role,
+            openId: ctx.user.openId,
+            ip: ctx.req.ip,
+          },
+          input
+        );
+      } catch (error) {
+        throw toTrpcError(error);
+      }
     }),
 
   exportPDF: adminProcedure

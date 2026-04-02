@@ -17,7 +17,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-const VENDEDORES = ["Todos", "Cleonice", "Luciano", "Vanuza", "Thuanny"];
+function toStartOfDay(value: string) {
+  return value ? new Date(`${value}T00:00:00`) : undefined;
+}
+
+function toEndOfDay(value: string) {
+  return value ? new Date(`${value}T23:59:59.999`) : undefined;
+}
 
 export default function SalesReport() {
   const [startDate, setStartDate] = useState("");
@@ -30,10 +36,15 @@ export default function SalesReport() {
     vendedor: "Todos",
     nomeCliente: "",
   });
+  const sellersQuery = trpc.catalogo.listSellers.useQuery(undefined, {
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const vendedores = ["Todos", ...(sellersQuery.data ?? []).map((item) => item.nome)];
 
   const { data: vendas, isLoading } = trpc.vendas.relatorio.useQuery({
-    startDate: appliedFilters.startDate ? new Date(appliedFilters.startDate) : undefined,
-    endDate: appliedFilters.endDate ? new Date(appliedFilters.endDate) : undefined,
+    startDate: toStartOfDay(appliedFilters.startDate),
+    endDate: toEndOfDay(appliedFilters.endDate),
     vendedor: appliedFilters.vendedor !== "Todos" ? appliedFilters.vendedor : undefined,
     nomeCliente: appliedFilters.nomeCliente || undefined,
   });
@@ -83,8 +94,8 @@ export default function SalesReport() {
 
   const handleExportPdf = () => {
     exportPdfMutation.mutate({
-      startDate: appliedFilters.startDate ? new Date(appliedFilters.startDate) : undefined,
-      endDate: appliedFilters.endDate ? new Date(appliedFilters.endDate) : undefined,
+      startDate: toStartOfDay(appliedFilters.startDate),
+      endDate: toEndOfDay(appliedFilters.endDate),
       vendedor: appliedFilters.vendedor !== "Todos" ? appliedFilters.vendedor : undefined,
       nomeCliente: appliedFilters.nomeCliente || undefined,
     });
@@ -92,8 +103,8 @@ export default function SalesReport() {
 
   const handleExportExcel = () => {
     exportExcelMutation.mutate({
-      startDate: appliedFilters.startDate ? new Date(appliedFilters.startDate) : undefined,
-      endDate: appliedFilters.endDate ? new Date(appliedFilters.endDate) : undefined,
+      startDate: toStartOfDay(appliedFilters.startDate),
+      endDate: toEndOfDay(appliedFilters.endDate),
       vendedor: appliedFilters.vendedor !== "Todos" ? appliedFilters.vendedor : undefined,
       nomeCliente: appliedFilters.nomeCliente || undefined,
     });
@@ -145,7 +156,7 @@ export default function SalesReport() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {VENDEDORES.map((v) => (
+                  {vendedores.map((v) => (
                     <SelectItem key={v} value={v}>
                       {v}
                     </SelectItem>

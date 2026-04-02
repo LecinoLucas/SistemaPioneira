@@ -21,19 +21,6 @@ interface SaleItem {
   estoque: number;
 }
 
-const DEFAULT_SELLERS = ["Cleonice", "Luciano", "Vanuza", "Thuanny"];
-
-const DEFAULT_PAYMENT_METHODS: PaymentMethodOption[] = [
-  { key: "PIX", label: "PIX", category: "Instantâneo" },
-  { key: "RECEBER_NA_ENTREGA", label: "RECEBER NA ENTREGA", category: "Entrega" },
-  { key: "DINHEIRO", label: "DINHEIRO", category: "Dinheiro" },
-  { key: "CARTAO_CREDITO", label: "CARTÃO DE CRÉDITO", category: "Cartão" },
-  { key: "CARTAO_DEBITO", label: "CARTÃO DE DÉBITO", category: "Cartão" },
-  { key: "BOLETO", label: "BOLETO", category: "Boleto" },
-  { key: "TRANSFERENCIA", label: "TRANSFERÊNCIA", category: "Transferência" },
-  { key: "OUTROS", label: "OUTROS", category: "Outros" },
-] as const;
-
 const INITIAL_PRODUCT_PRELIST_LIMIT = 20;
 const SEARCH_PRODUCT_LIMIT = 100;
 const INITIAL_VISIBLE_ROWS = 20;
@@ -49,22 +36,37 @@ function normalizePaymentName(value: string): string {
     .trim();
 }
 
-function resolveKnownPaymentMethod(value: string, methods: PaymentMethodOption[] = DEFAULT_PAYMENT_METHODS): string | null {
+function resolveKnownPaymentMethod(value: string, methods: PaymentMethodOption[] = []): string | null {
   const normalized = normalizePaymentName(value);
   if (!normalized) return null;
-  if (normalized.includes("receber na entrega")) return "RECEBER_NA_ENTREGA";
-  if (normalized === "pix") return "PIX";
-  if (normalized.includes("credito")) return "CARTAO_CREDITO";
-  if (normalized.includes("debito")) return "CARTAO_DEBITO";
-  if (normalized.includes("boleto")) return "BOLETO";
-  if (normalized.includes("transferencia") || normalized.includes("ted")) return "TRANSFERENCIA";
-  if (normalized.includes("dinheiro") || normalized.includes("especie")) return "DINHEIRO";
-  if (normalized.includes("multiplo") || normalized.includes("misto")) return "MULTIPLO";
-  const fallback = methods.find((item) => normalizePaymentName(item.label) === normalized);
-  return fallback?.key ?? null;
+
+  const direct = methods.find((item) => {
+    const label = normalizePaymentName(item.label);
+    const key = normalizePaymentName(item.key);
+    return label === normalized || key === normalized;
+  });
+  if (direct) return direct.key;
+
+  const aliases = [
+    normalized.includes("receber na entrega") ? "receber na entrega" : null,
+    normalized === "pix" ? "pix" : null,
+    normalized.includes("credito") ? "credito" : null,
+    normalized.includes("debito") ? "debito" : null,
+    normalized.includes("boleto") ? "boleto" : null,
+    normalized.includes("transferencia") || normalized.includes("ted") ? "transferencia" : null,
+    normalized.includes("dinheiro") || normalized.includes("especie") ? "dinheiro" : null,
+    normalized.includes("multiplo") || normalized.includes("misto") ? "multiplo" : null,
+  ].filter((value): value is string => Boolean(value));
+
+  const semantic = methods.find((item) => {
+    const label = normalizePaymentName(item.label);
+    const key = normalizePaymentName(item.key);
+    return aliases.some((alias) => label.includes(alias) || key.includes(alias));
+  });
+  return semantic?.key ?? null;
 }
 
-function getPaymentLabelByKey(key: string, methods: PaymentMethodOption[] = DEFAULT_PAYMENT_METHODS): string {
+function getPaymentLabelByKey(key: string, methods: PaymentMethodOption[] = []): string {
   const found = methods.find((item) => item.key === key);
   return found?.label ?? key;
 }
@@ -88,7 +90,7 @@ function isSellerTokenMatch(candidate: string, normalizedSeller: string): boolea
   return parts.some((part) => normalizedSeller.includes(part));
 }
 
-function resolveKnownSeller(value: string, sellers: string[] = DEFAULT_SELLERS): string | null {
+function resolveKnownSeller(value: string, sellers: string[] = []): string | null {
   const normalized = normalizeSellerName(value);
   if (!normalized) return null;
   const exact = sellers.find((item) => normalizeSellerName(item) === normalized);
@@ -97,7 +99,7 @@ function resolveKnownSeller(value: string, sellers: string[] = DEFAULT_SELLERS):
   return fuzzy ?? null;
 }
 
-function suggestKnownSeller(value: string, sellers: string[] = DEFAULT_SELLERS): string | null {
+function suggestKnownSeller(value: string, sellers: string[] = []): string | null {
   const normalized = normalizeSellerName(value);
   if (!normalized) return null;
   const starts = sellers.find((item) => normalizeSellerName(item).startsWith(normalized));
@@ -113,6 +115,26 @@ function parseCurrencyInput(value: string): number | undefined {
   return Number.isNaN(parsed) ? undefined : parsed;
 }
 
+function getTodayDateInputValue(): string {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, "0");
+  const day = String(today.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseImportedSaleDate(value?: string | null): Date | undefined {
+  if (!value) return undefined;
+
+  const datePart = value.match(/^(\d{4}-\d{2}-\d{2})/)?.[1];
+  if (datePart) {
+    return new Date(`${datePart}T12:00:00`);
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
 export default function Sales() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
@@ -126,7 +148,7 @@ export default function Sales() {
   const [telefoneCliente, setTelefoneCliente] = useState("");
   const [enderecoCliente, setEnderecoCliente] = useState("");
   const [formasPagamento, setFormasPagamento] = useState<string[]>([]);
-  const [dataVenda, setDataVenda] = useState("");
+  const [dataVenda, setDataVenda] = useState(() => getTodayDateInputValue());
   const [valorTotalInput, setValorTotalInput] = useState("");
   const [observacoes, setObservacoes] = useState("");
   const [tipoTransacao, setTipoTransacao] = useState<"venda" | "troca" | "brinde" | "emprestimo" | "permuta">("venda");
@@ -146,8 +168,8 @@ export default function Sales() {
   const manualFileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Refs for stable callbacks
-  const sellersRef = useRef<string[]>(DEFAULT_SELLERS);
-  const paymentMethodsRef = useRef<PaymentMethodOption[]>(DEFAULT_PAYMENT_METHODS);
+  const sellersRef = useRef<string[]>([]);
+  const paymentMethodsRef = useRef<PaymentMethodOption[]>([]);
 
   // ── Debounce search ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -171,23 +193,21 @@ export default function Sales() {
   });
 
   const paymentMethods = useMemo<PaymentMethodOption[]>(() => {
-    const fromCatalog = (paymentMethodsQuery.data ?? [])
+    return (paymentMethodsQuery.data ?? [])
       .filter((item) => item.codigo?.trim() && item.nome?.trim())
       .map((item) => ({
         key: item.codigo.trim().toUpperCase(),
         label: item.nome.trim(),
         category: item.categoria?.trim() || "Outros",
       }));
-    return fromCatalog.length > 0 ? fromCatalog : [...DEFAULT_PAYMENT_METHODS];
   }, [paymentMethodsQuery.data]);
 
   const paymentMethodsLoading = paymentMethodsQuery.isLoading;
 
   const sellers = useMemo<string[]>(() => {
-    const fromCatalog = (sellersQuery.data ?? [])
+    return (sellersQuery.data ?? [])
       .map((item) => item.nome?.trim())
       .filter((item): item is string => Boolean(item));
-    return fromCatalog.length > 0 ? fromCatalog : [...DEFAULT_SELLERS];
   }, [sellersQuery.data]);
 
   // Keep refs in sync
@@ -213,10 +233,16 @@ export default function Sales() {
     }
   );
 
-  const productsForMappingQuery = trpc.products.list.useQuery(
-    { page: 1, pageSize: 500, includeArchived: false },
+  const productsForMappingQuery = trpc.vendas.getProductsLiteForImport.useQuery(
+    undefined,
     { staleTime: 60_000, refetchOnWindowFocus: false }
   );
+  const mappingProducts = productsForMappingQuery.data ?? [];
+  const mappingProductById = useMemo(() => {
+    const map = new Map<number, (typeof mappingProducts)[number]>();
+    for (const product of mappingProducts) map.set(product.id, product);
+    return map;
+  }, [mappingProducts]);
 
   const registrarVendaMutation = trpc.vendas.registrar.useMutation({
     onSuccess: () => {
@@ -267,6 +293,12 @@ export default function Sales() {
       utils.dashboard.stats.invalidate();
       utils.products.lowStock.invalidate();
       utils.movimentacoes.list.invalidate();
+      utils.vendas.list.invalidate();
+      utils.vendas.relatorio.invalidate();
+      utils.vendas.byVendedor.invalidate();
+      utils.vendas.rankingProdutos.invalidate();
+      utils.vendas.rankingVendedores.invalidate();
+      utils.vendas.importHistory.invalidate();
       toast.success("Venda importada registrada com sucesso!");
     },
     onError: (error) => {
@@ -294,15 +326,29 @@ export default function Sales() {
       ? (resolveKnownSeller(draft.vendedor, currentSellers) ?? "")
       : "";
 
-    const extractedKeys = (draft.formasPagamentoExtraidas ?? [])
-      .map((e) => resolveKnownPaymentMethod(e.descricao, currentMethods))
-      .filter((k): k is string => Boolean(k));
-    const fallbackKey = resolveKnownPaymentMethod(draft.formaPagamento ?? "", currentMethods);
+    const extracted = (draft.formasPagamentoExtraidas ?? []).map((e) => ({
+      raw: e.descricao,
+      key: resolveKnownPaymentMethod(e.descricao, currentMethods),
+    }));
+    const extractedKeys = extracted.filter((e): e is typeof e & { key: string } => Boolean(e.key)).map((e) => e.key);
+    const unresolvedFromExtracted = extracted.filter((e) => !e.key).map((e) => e.raw);
+
+    const fallbackRaw = draft.formaPagamento ?? "";
+    const fallbackKey = resolveKnownPaymentMethod(fallbackRaw, currentMethods);
+
     const pagamentoKeys =
       extractedKeys.length > 0
         ? extractedKeys
         : fallbackKey
           ? [fallbackKey]
+          : [];
+
+    // Unresolved = strings from PDF that couldn't be matched to any registered method
+    const unresolvedPagamentos =
+      extractedKeys.length > 0
+        ? unresolvedFromExtracted
+        : !fallbackKey && fallbackRaw.trim()
+          ? [fallbackRaw]
           : [];
 
     return {
@@ -312,6 +358,7 @@ export default function Sales() {
       clienteOverride: draft.cliente ?? "",
       vendedorKey,
       pagamentoKeys,
+      unresolvedPagamentos,
     };
   }
 
@@ -374,6 +421,11 @@ export default function Sales() {
 
   const registerDraftNow = useCallback(
     async (draft: ImportedDraft) => {
+      if ((draft.validationErrors?.length ?? 0) > 0) {
+        toast.error(draft.validationErrors[0]);
+        return;
+      }
+
       const state = getDraftState(draft);
 
       if (!state.clienteOverride.trim()) {
@@ -402,6 +454,19 @@ export default function Sales() {
         return;
       }
 
+      const outOfStockLinked = items
+        .map((item) => mappingProductById.get(item.productId))
+        .filter((product): product is NonNullable<typeof product> => Boolean(product))
+        .filter((product) => product.quantidade <= 0);
+      if (outOfStockLinked.length > 0) {
+        toast.error(
+          `Existem produtos sem estoque vinculados: ${outOfStockLinked
+            .map((product) => `${product.name} (${product.medida})`)
+            .join(", ")}.`
+        );
+        return;
+      }
+
       // Check for duplicate product IDs
       const productIds = items.map((i) => i.productId);
       const uniqueIds = new Set(productIds);
@@ -419,7 +484,7 @@ export default function Sales() {
         vendedor: state.vendedorKey,
         nomeCliente: state.clienteOverride.trim(),
         formaPagamento: formaPagamentoFinal,
-        dataVenda: draft.dataVenda ? new Date(draft.dataVenda) : undefined,
+        dataVenda: parseImportedSaleDate(draft.dataVenda),
         telefoneCliente: draft.telefoneCliente ?? undefined,
         enderecoCliente: draft.endereco ?? undefined,
         valorTotal: draft.total ?? undefined,
@@ -442,6 +507,7 @@ export default function Sales() {
       getApprovedItems,
       registrarImportadaMutation,
       getDraftKey,
+      mappingProductById,
       utils.vendas.importHistory,
     ]
   );
@@ -711,6 +777,10 @@ export default function Sales() {
       toast.error("Informe o nome do cliente para confirmar a venda.");
       return;
     }
+    if (paymentMethods.length === 0) {
+      toast.error("Cadastre ao menos uma forma de pagamento em Categorias antes de lançar a venda.");
+      return;
+    }
     const filledFormas = formasPagamento.filter((k) => k.trim());
     if (filledFormas.length === 0) {
       toast.error("Informe pelo menos uma forma de pagamento.");
@@ -750,7 +820,7 @@ export default function Sales() {
     setTelefoneCliente("");
     setEnderecoCliente("");
     setFormasPagamento([]);
-    setDataVenda("");
+    setDataVenda(getTodayDateInputValue());
     setValorTotalInput("");
     setObservacoes("");
   };
@@ -759,18 +829,6 @@ export default function Sales() {
   const totalItems = saleItems.length;
   const totalUnits = saleItems.reduce((acc, item) => acc + item.quantidade, 0);
   const lowStockItems = saleItems.filter((item) => item.quantidade > item.estoque);
-  const mappingProducts = useMemo(() => {
-    const items = productsForMappingQuery.data?.items ?? [];
-    return items
-      .filter((p): p is typeof p & { id: number } => p.id != null)
-      .map((p) => ({
-        id: p.id,
-        name: p.name,
-        medida: p.medida,
-        marca: p.marca ?? null,
-        quantidade: p.quantidade,
-      }));
-  }, [productsForMappingQuery.data?.items]);
   const pendingImportCount = importedDrafts.filter((d) => !processedImports[getDraftKey(d)]).length;
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -788,6 +846,7 @@ export default function Sales() {
           type="button"
           variant={pendingImportCount > 0 ? "default" : "outline"}
           className="w-full sm:w-auto gap-2"
+          data-testid="sales-import-open"
           onClick={() => setIsImportPanelOpen(true)}
         >
           <UploadCloud className="h-4 w-4" />

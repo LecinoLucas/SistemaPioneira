@@ -1,14 +1,14 @@
 import { useState, useMemo } from "react";
-import { Check, ChevronsUpDown, AlertTriangle } from "lucide-react";
+import { Check, ChevronsUpDown, AlertTriangle, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Command,
-  CommandEmpty,
   CommandGroup,
   CommandInput,
   CommandItem,
   CommandList,
+  CommandSeparator,
 } from "@/components/ui/command";
 import {
   Popover,
@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import type { MappingProduct } from "./SalesImportDialog";
+import { buildProductLinkState } from "./product-link-combobox.utils";
 
 type Props = {
   products: MappingProduct[];
@@ -25,6 +26,8 @@ type Props = {
   /** IDs already linked in other rows of the same draft */
   usedProductIds?: Set<number>;
   disabled?: boolean;
+  searchSeed?: string;
+  testId?: string;
 };
 
 export function ProductLinkCombobox({
@@ -33,36 +36,38 @@ export function ProductLinkCombobox({
   onChange,
   usedProductIds,
   disabled,
+  searchSeed,
+  testId,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
-
   const selectedProduct = useMemo(
     () => (value ? products.find((p) => p.id === value) : null),
     [products, value],
   );
 
   const isDuplicate = value != null && usedProductIds?.has(value);
-
-  // Filter products based on search (name, medida or marca)
-  const filtered = useMemo(() => {
-    if (!search.trim()) return products.slice(0, 80);
-    const terms = search
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .split(/\s+/)
-      .filter(Boolean);
-    return products
-      .filter((p) => {
-        const hay = `${p.name} ${p.medida} ${p.marca ?? ""}`
-          .toLowerCase()
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "");
-        return terms.every((t) => hay.includes(t));
-      })
-      .slice(0, 80);
-  }, [products, search]);
+  const {
+    normalizedSeed,
+    effectiveQuery,
+    searchableProducts,
+    filtered,
+    hasSuggestedMatches,
+    suggestedProducts,
+    fallbackProducts,
+  } = useMemo(() => buildProductLinkState({
+    products,
+    value,
+    usedProductIds,
+    search,
+    searchSeed,
+  }), [
+    products,
+    search,
+    searchSeed,
+    usedProductIds,
+    value,
+  ]);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -72,8 +77,9 @@ export function ProductLinkCombobox({
           role="combobox"
           aria-expanded={open}
           disabled={disabled}
+          data-testid={testId ? `${testId}-trigger` : undefined}
           className={cn(
-            "h-7 w-full justify-between text-xs font-normal px-2",
+            "h-8 w-full justify-between text-xs font-normal px-2",
             !value && "text-muted-foreground",
             isDuplicate && "border-red-400 bg-red-50",
           )}
@@ -81,7 +87,7 @@ export function ProductLinkCombobox({
           <span className="truncate flex-1 text-left">
             {selectedProduct
               ? `${selectedProduct.name} (${selectedProduct.medida})${selectedProduct.marca ? ` — ${selectedProduct.marca}` : ""}`
-              : "Buscar produto..."}
+              : "Buscar produto no estoque..."}
           </span>
           {isDuplicate ? (
             <AlertTriangle className="ml-1 h-3 w-3 shrink-0 text-red-500" />
@@ -90,78 +96,177 @@ export function ProductLinkCombobox({
           )}
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[280px] p-0" align="start">
+      <PopoverContent
+        className="w-full max-w-[92vw] md:max-w-[760px] p-0"
+        align="start"
+        data-testid={testId ? `${testId}-content` : undefined}
+      >
         <Command shouldFilter={false}>
           <CommandInput
-            placeholder="Digite para buscar..."
+            autoFocus
+            placeholder="Buscar por nome, medida ou marca..."
             value={search}
             onValueChange={setSearch}
+            data-testid={testId ? `${testId}-input` : undefined}
           />
+          {!search.trim() && normalizedSeed && (
+            <div className="flex items-center gap-2 border-b px-3 py-2 text-[11px] text-muted-foreground">
+              <Search className="h-3 w-3 shrink-0" />
+              <span className="truncate">Sugestões baseadas no item do PDF</span>
+            </div>
+          )}
+          {search.trim() && !hasSuggestedMatches && (
+            <div className="flex items-center gap-2 border-b px-3 py-2 text-[11px] text-muted-foreground">
+              <Search className="h-3 w-3 shrink-0" />
+              <span className="truncate">Sem sugestão direta. Exibindo todo o estoque para escolha manual.</span>
+            </div>
+          )}
           <CommandList>
-            <CommandEmpty>Nenhum produto encontrado.</CommandEmpty>
-            <CommandGroup>
-              {/* Unlink option */}
-              <CommandItem
-                value="__none"
-                onSelect={() => {
-                  onChange(null);
-                  setOpen(false);
-                  setSearch("");
-                }}
-              >
-                <Check
-                  className={cn(
-                    "mr-2 h-3 w-3",
-                    value == null ? "opacity-100" : "opacity-0",
-                  )}
-                />
-                <span className="text-muted-foreground">Sem vínculo</span>
-              </CommandItem>
-              {filtered.map((p) => {
-                const isUsed = usedProductIds?.has(p.id) && p.id !== value;
-                const outOfStock = p.quantidade <= 0;
-                return (
+            {searchableProducts.length === 0 ? (
+              <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+                Nenhum produto disponível em estoque.
+              </div>
+            ) : (
+              <>
+                <CommandGroup heading="Ações">
                   <CommandItem
-                    key={p.id}
-                    value={String(p.id)}
+                    value="acao sem vinculo limpar"
                     onSelect={() => {
-                      onChange(p.id === value ? null : p.id);
+                      onChange(null);
                       setOpen(false);
                       setSearch("");
                     }}
-                    className={cn(isUsed && "opacity-50")}
                   >
                     <Check
                       className={cn(
-                        "mr-2 h-3 w-3 shrink-0",
-                        p.id === value ? "opacity-100" : "opacity-0",
+                        "mr-2 h-3 w-3",
+                        value == null ? "opacity-100" : "opacity-0",
                       )}
                     />
-                    <div className="flex-1 min-w-0">
-                      <span className="truncate block text-xs">
-                        {p.name} ({p.medida})
-                      </span>
-                      {p.marca && (
-                        <span className="text-[10px] text-muted-foreground">{p.marca}</span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-1 ml-1 shrink-0">
-                      <Badge
-                        variant={outOfStock ? "destructive" : p.quantidade <= 3 ? "outline" : "secondary"}
-                        className="text-[9px] px-1 py-0"
-                      >
-                        {p.quantidade} un.
-                      </Badge>
-                      {isUsed && (
-                        <span className="text-[10px] text-amber-600">
-                          já usado
-                        </span>
-                      )}
-                    </div>
+                    <span className="text-muted-foreground">Sem vínculo</span>
                   </CommandItem>
-                );
-              })}
-            </CommandGroup>
+                </CommandGroup>
+
+                {effectiveQuery && suggestedProducts.length > 0 && (
+                  <>
+                    <CommandSeparator />
+                    <CommandGroup heading="Melhores sugestões">
+                      {suggestedProducts.map(({ product, isUsed, inStock, score }, index) => {
+                        const outOfStock = !inStock;
+                        return (
+                          <CommandItem
+                            key={`suggested-${product.id}`}
+                            value={`sugestao ${product.id} ${product.name} ${product.medida} ${product.marca ?? ""}`}
+                            disabled={isUsed}
+                            onSelect={() => {
+                              if (isUsed) return;
+                              onChange(product.id === value ? null : product.id);
+                              setOpen(false);
+                              setSearch("");
+                            }}
+                            className={cn(isUsed && "opacity-50")}
+                          >
+                            <Check
+                              className={cn(
+                                "mr-2 h-3 w-3 shrink-0",
+                                product.id === value ? "opacity-100" : "opacity-0",
+                              )}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1">
+                                <span className="truncate block text-xs">
+                                  {product.name} ({product.medida})
+                                </span>
+                                {index === 0 && (
+                                  <Badge variant="outline" className="text-[9px] px-1 py-0">
+                                    Melhor opcao
+                                  </Badge>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                                {product.marca && <span className="truncate">{product.marca}</span>}
+                                <span>{Math.round(score * 100)}%</span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1 ml-1 shrink-0">
+                              <Badge
+                                variant={outOfStock ? "destructive" : product.quantidade <= 3 ? "outline" : "secondary"}
+                                className="text-[9px] px-1 py-0"
+                              >
+                                {product.quantidade} un.
+                              </Badge>
+                              {isUsed && (
+                                <span className="text-[10px] text-amber-600">
+                                  ja usado
+                                </span>
+                              )}
+                            </div>
+                          </CommandItem>
+                        );
+                      })}
+                    </CommandGroup>
+                  </>
+                )}
+
+                <CommandSeparator />
+                <CommandGroup heading={effectiveQuery ? "Todo o estoque" : "Produtos em estoque"}>
+                  {(effectiveQuery ? fallbackProducts : filtered).map(({ product, isUsed, inStock, score }) => {
+                    const outOfStock = !inStock;
+                    return (
+                      <CommandItem
+                        key={product.id}
+                        value={`estoque ${product.id} ${product.name} ${product.medida} ${product.marca ?? ""}`}
+                        disabled={isUsed}
+                        onSelect={() => {
+                          if (isUsed) return;
+                          onChange(product.id === value ? null : product.id);
+                          setOpen(false);
+                          setSearch("");
+                        }}
+                        className={cn(isUsed && "opacity-50")}
+                      >
+                        <Check
+                          className={cn(
+                            "mr-2 h-3 w-3 shrink-0",
+                            product.id === value ? "opacity-100" : "opacity-0",
+                          )}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <span className="truncate block text-xs">
+                            {product.name} ({product.medida})
+                          </span>
+                          <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                            {product.marca && <span className="truncate">{product.marca}</span>}
+                            {effectiveQuery && score > 0 && (
+                              <span>{Math.round(score * 100)}%</span>
+                            )}
+                            {effectiveQuery && score === 0 && (
+                              <span>manual</span>
+                            )}
+                          </div>
+                          {product.marca && (
+                            <span className="sr-only">{product.marca}</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1 ml-1 shrink-0">
+                          <Badge
+                            variant={outOfStock ? "destructive" : product.quantidade <= 3 ? "outline" : "secondary"}
+                            className="text-[9px] px-1 py-0"
+                          >
+                            {product.quantidade} un.
+                          </Badge>
+                          {isUsed && (
+                            <span className="text-[10px] text-amber-600">
+                              já usado
+                            </span>
+                          )}
+                        </div>
+                      </CommandItem>
+                    );
+                  })}
+                </CommandGroup>
+              </>
+            )}
           </CommandList>
         </Command>
       </PopoverContent>

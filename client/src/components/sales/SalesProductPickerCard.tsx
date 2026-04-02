@@ -204,6 +204,11 @@ export function SalesProductPickerCard({ form, search }: SalesProductPickerCardP
             {paymentMethodsLoading && (
               <p className="text-xs text-muted-foreground">Carregando catálogo de pagamentos...</p>
             )}
+            {!paymentMethodsLoading && paymentMethods.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                Cadastre formas de pagamento em Categorias para liberar o lançamento.
+              </p>
+            )}
           </div>
         </div>
 

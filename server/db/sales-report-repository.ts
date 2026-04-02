@@ -13,15 +13,6 @@ type SalesProduct = {
   quantidade: number;
 };
 
-type V2OverlayProduct = {
-  legacyId: number;
-  name: string;
-  marca: string | null;
-  medida: string;
-  categoria: string;
-  onHand: number | null;
-};
-
 export async function getVendasByVendedorFromDb(
   db: DbConnection,
   startDate: Date,
@@ -58,11 +49,6 @@ export async function getVendasRelatorioFromDb(
   db: DbConnection,
   deps: {
     getProductsByIds: (ids: number[]) => Promise<SalesProduct[]>;
-    getV2OverlayProductsByLegacyIds: (
-      dbConn: DbConnection,
-      legacyIds: number[]
-    ) => Promise<Map<number, V2OverlayProduct>>;
-    readMode: string;
   },
   filters: {
     startDate?: Date;
@@ -94,26 +80,15 @@ export async function getVendasRelatorioFromDb(
   const productIds = Array.from(new Set(vendasList.map((venda) => venda.productId)));
   const productsList = await deps.getProductsByIds(productIds);
   const productsMap = new Map(productsList.map((product) => [product.id, product]));
-  const overlayMap =
-    deps.readMode === "legacy"
-      ? new Map<number, V2OverlayProduct>()
-      : await deps.getV2OverlayProductsByLegacyIds(db, productIds);
-  if (deps.readMode === "shadow" && overlayMap.size !== productIds.length) {
-    console.warn("[VendasRelatorio][Shadow] Divergência de mapeamento legado->V2", {
-      productIds: productIds.length,
-      mapped: overlayMap.size,
-    });
-  }
 
   return vendasList.map((venda) => {
     const product = productsMap.get(venda.productId);
-    const overlay = overlayMap.get(venda.productId);
     return {
       ...venda,
-      productName: overlay?.name || product?.name || "Produto não encontrado",
-      medida: overlay?.medida || product?.medida || "",
-      categoria: overlay?.categoria || product?.categoria || "",
-      marca: overlay?.marca || product?.marca || null,
+      productName: product?.name || "Produto não encontrado",
+      medida: product?.medida || "",
+      categoria: product?.categoria || "",
+      marca: product?.marca || null,
     };
   });
 }
@@ -153,11 +128,6 @@ export async function getRankingProdutosFromDb(
   db: DbConnection,
   deps: {
     getProductsByIds: (ids: number[]) => Promise<SalesProduct[]>;
-    getV2OverlayProductsByLegacyIds: (
-      dbConn: DbConnection,
-      legacyIds: number[]
-    ) => Promise<Map<number, V2OverlayProduct>>;
-    readMode: string;
   },
   filters: { startDate?: Date; endDate?: Date }
 ) {
@@ -183,29 +153,15 @@ export async function getRankingProdutosFromDb(
 
   const productsList = await deps.getProductsByIds(result.map((row) => row.productId));
   const productsMap = new Map(productsList.map((product) => [product.id, product]));
-  const overlayMap =
-    deps.readMode === "legacy"
-      ? new Map<number, V2OverlayProduct>()
-      : await deps.getV2OverlayProductsByLegacyIds(
-          db,
-          result.map((row) => row.productId)
-        );
-  if (deps.readMode === "shadow" && overlayMap.size !== result.length) {
-    console.warn("[RankingProdutos][Shadow] Divergência de mapeamento legado->V2", {
-      productIds: result.length,
-      mapped: overlayMap.size,
-    });
-  }
 
   const enrichedResult = result.map((row) => {
     const product = productsMap.get(row.productId);
-    const overlay = overlayMap.get(row.productId);
     return {
       productId: row.productId,
-      nome: overlay?.name || product?.name || "Produto não encontrado",
-      marca: overlay?.marca || product?.marca || "-",
-      medida: overlay?.medida || product?.medida || "-",
-      categoria: overlay?.categoria || product?.categoria || "-",
+      nome: product?.name || "Produto não encontrado",
+      marca: product?.marca || "-",
+      medida: product?.medida || "-",
+      categoria: product?.categoria || "-",
       quantidadeTotal: Number(row.quantidadeTotal),
       totalVendas: Number(row.totalVendas),
     };

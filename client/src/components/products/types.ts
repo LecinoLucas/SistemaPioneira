@@ -35,39 +35,7 @@ export type DuplicateIdentityMatch = {
   arquivado: boolean;
 };
 
-export const PRODUCT_CATEGORY_OPTIONS = [
-  "Colchões",
-  "Roupas de Cama",
-  "Pillow Top",
-  "Travesseiros",
-  "Cabeceiras",
-  "Box Baú",
-  "Box Premium",
-  "Box Tradicional",
-  "Acessórios",
-  "Bicamas",
-  "Camas",
-] as const;
-
-export type ProductCategory = (typeof PRODUCT_CATEGORY_OPTIONS)[number];
-
-const PRODUCT_CATEGORY_NORMALIZATION_MAP: Record<string, ProductCategory> = {
-  colchoes: "Colchões",
-  "roupa de cama": "Roupas de Cama",
-  "roupas de cama": "Roupas de Cama",
-  pillowtop: "Pillow Top",
-  "pillow top": "Pillow Top",
-  travesseiros: "Travesseiros",
-  cabeceiras: "Cabeceiras",
-  "box bau": "Box Baú",
-  "box premium": "Box Premium",
-  "box tradicional": "Box Tradicional",
-  acessorios: "Acessórios",
-  bicamas: "Bicamas",
-  camas: "Camas",
-};
-
-function normalizeCategoryKey(value: string): string {
+function normalizeCatalogTypeKey(value: string) {
   return value
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -77,6 +45,32 @@ function normalizeCategoryKey(value: string): string {
     .trim();
 }
 
-export function normalizeProductCategory(value: string): ProductCategory | null {
-  return PRODUCT_CATEGORY_NORMALIZATION_MAP[normalizeCategoryKey(value)] ?? null;
+export function normalizeCatalogTypeInput(value: string) {
+  return value.toLocaleUpperCase("pt-BR");
+}
+
+export function normalizeCatalogMeasureInput(value: string) {
+  return value.toLocaleUpperCase("pt-BR");
+}
+
+export function normalizeCatalogBrandInput(value: string) {
+  return value.toLocaleUpperCase("pt-BR");
+}
+
+export function normalizeCatalogModelInput(value: string) {
+  return value.toLocaleUpperCase("pt-BR");
+}
+
+export function normalizeCatalogPaymentInput(value: string) {
+  return value.toLocaleUpperCase("pt-BR");
+}
+
+export function normalizeCatalogSellerInput(value: string) {
+  return value.toLocaleUpperCase("pt-BR");
+}
+
+export function resolveCatalogTypeValue(value: string, options: string[]) {
+  const target = normalizeCatalogTypeKey(value);
+  if (!target) return value;
+  return options.find((option) => normalizeCatalogTypeKey(option) === target) ?? value;
 }

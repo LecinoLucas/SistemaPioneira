@@ -15,6 +15,12 @@ const vendasService = new VendasService(new FileAuditGateway());
 const tipoTransacaoSchema = z.enum(["venda", "troca", "brinde", "emprestimo", "permuta"]);
 
 export const vendasRouter = router({
+  getProductsLiteForImport: protectedProcedure
+    .use(withActionPermission("action:sales.manage"))
+    .query(async () => {
+      return await vendasService.getProductsLiteForImport();
+    }),
+
   importHistory: protectedProcedure
     .use(withActionPermission("action:sales.manage"))
     .input(

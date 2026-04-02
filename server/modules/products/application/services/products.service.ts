@@ -1,8 +1,6 @@
 import { STOCK_AUDIT_ACTION } from "@shared/stock-governance";
 import * as db from "../../../../db";
 import { notifyOwner } from "../../../../_core/notification";
-import { ENV } from "../../../../_core/env";
-import type { ProductCategory } from "../../../../db/legacy-domain-types";
 import type { IAuditGateway } from "../../../audit/domain/contracts/audit.gateway";
 import { DomainError } from "../../../shared/errors/domain-error";
 
@@ -32,15 +30,35 @@ const sanitizeReason = (value?: string | null) => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
-const SHADOW_LOG_COOLDOWN_MS = 60_000;
-const shadowLogCooldownMap = new Map<string, number>();
+const normalizeProductName = (value: string) => value.trim().toLocaleUpperCase("pt-BR");
 
-function shouldEmitShadowLog(key: string) {
-  const now = Date.now();
-  const last = shadowLogCooldownMap.get(key) ?? 0;
-  if (now - last < SHADOW_LOG_COOLDOWN_MS) return false;
-  shadowLogCooldownMap.set(key, now);
-  return true;
+const LEGACY_PRODUCT_CATEGORY_VALUES = [
+  "Colchões",
+  "Roupas de Cama",
+  "Pillow Top",
+  "Travesseiros",
+  "Cabeceiras",
+  "Box Baú",
+  "Box Premium",
+  "Box Tradicional",
+  "Acessórios",
+  "Bicamas",
+  "Camas",
+] as const;
+
+function normalizeCategoryKey(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[_-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function resolveLegacyProductCategoryValue(value: string) {
+  const target = normalizeCategoryKey(value);
+  return LEGACY_PRODUCT_CATEGORY_VALUES.find((item) => normalizeCategoryKey(item) === target) ?? value.trim();
 }
 
 export class ProductsService {
@@ -157,101 +175,7 @@ export class ProductsService {
       };
     };
 
-    const readMode = ENV.stockV2ReadMode;
-    if (readMode === "legacy") {
-      return await getLegacyList();
-    }
-
-    const v2 = await db.listProductsV2ReadModel({
-      searchTerm: input?.searchTerm,
-      medida: input?.medida,
-      categoria: input?.categoria,
-      marca: input?.marca,
-      onlyActiveForSales: input?.onlyActiveForSales,
-      includeArchived: input?.includeArchived,
-      page,
-      pageSize,
-    });
-
-    if (readMode === "shadow") {
-      const legacy = await getLegacyList();
-      const legacyDistinctCatalogKeyTotal = await db.countLegacyProductsDistinctCatalogKey({
-        searchTerm: input?.searchTerm,
-        medida: input?.medida,
-        categoria: input?.categoria,
-        marca: input?.marca,
-        onlyActiveForSales: input?.onlyActiveForSales,
-        includeArchived: input?.includeArchived,
-      });
-      const hasTotalDrift = legacy.total !== v2.total;
-      const hasPageDrift = legacy.items.length !== v2.items.length;
-      const hasStructuralTotalDrift = legacyDistinctCatalogKeyTotal !== v2.total;
-      const likelyLegacyDuplicatesCollapsed =
-        !hasStructuralTotalDrift && legacy.total !== legacyDistinctCatalogKeyTotal;
-      const shadowLogKey = JSON.stringify({
-        searchTerm: input?.searchTerm ?? null,
-        medida: input?.medida ?? null,
-        categoria: input?.categoria ?? null,
-        marca: input?.marca ?? null,
-        onlyActiveForSales: input?.onlyActiveForSales ?? false,
-        includeArchived: input?.includeArchived ?? false,
-        page,
-        pageSize,
-      });
-
-      if ((hasPageDrift || hasStructuralTotalDrift) && shouldEmitShadowLog(`drift:${shadowLogKey}`)) {
-        console.warn("[Products.list][Shadow] Divergência legado x V2", {
-          filters: input ?? {},
-          legacyTotal: legacy.total,
-          legacyDistinctCatalogKeyTotal,
-          v2Total: v2.total,
-          legacyPageCount: legacy.items.length,
-          v2PageCount: v2.items.length,
-          likelyLegacyDuplicatesCollapsed,
-        });
-      } else if (
-        hasTotalDrift &&
-        likelyLegacyDuplicatesCollapsed &&
-        shouldEmitShadowLog(`expected:${shadowLogKey}`)
-      ) {
-        console.info("[Products.list][Shadow] Diferença esperada por duplicidade no legado", {
-          filters: input ?? {},
-          legacyTotal: legacy.total,
-          legacyDistinctCatalogKeyTotal,
-          v2Total: v2.total,
-        });
-      }
-      return legacy;
-    }
-
-    // v2 mode: only use V2 if all rows are safely mapped to legacy IDs.
-    const missingLegacyMapping = v2.items.some((item) => item.id == null);
-    if (missingLegacyMapping) {
-      console.warn("[Products.list][V2] IDs legado ausentes em parte dos itens. Fallback para legado.");
-      return await getLegacyList();
-    }
-
-    return {
-      total: v2.total,
-      items: v2.items.map((item) => ({
-        id: Number(item.id),
-        name: item.name,
-        marca: item.marca,
-        medida: item.medida,
-        categoria: item.categoria as ProductCategory,
-        quantidade: item.quantidade,
-        estoqueMinimo: item.estoqueMinimo,
-        ativoParaVenda: item.ativoParaVenda,
-        arquivado: item.arquivado,
-        motivoInativacao: item.motivoInativacao,
-        motivoArquivamento: item.motivoArquivamento,
-        precoCusto: item.precoCusto,
-        precoVenda: item.precoVenda,
-        createdAt: item.createdAt,
-        updatedAt: item.updatedAt,
-        statusProduto: getProductLifecycleStatus(item),
-      })),
-    };
+    return await getLegacyList();
   }
 
   async getBrands() {
@@ -274,7 +198,7 @@ export class ProductsService {
     excludeId?: number;
   }) {
     const matches = await db.findProductsByCatalogIdentity({
-      name: input.name,
+      name: normalizeProductName(input.name),
       medida: input.medida,
       marca: input.marca ?? null,
       excludeId: input.excludeId,
@@ -302,36 +226,27 @@ export class ProductsService {
       name: string;
       marca?: string;
       medida: string;
-      categoria:
-        | "Colchões"
-        | "Roupas de Cama"
-        | "Pillow Top"
-        | "Travesseiros"
-        | "Cabeceiras"
-        | "Box Baú"
-        | "Box Premium"
-        | "Box Tradicional"
-        | "Acessórios"
-        | "Bicamas"
-        | "Camas";
+      categoria: string;
       quantidade: number;
       estoqueMinimo: number;
     }
   ) {
     try {
+      const normalizedBrandInput = input.marca?.trim() || undefined;
       const normalizedInput = {
         ...input,
-        marca: input.marca?.trim() ? input.marca.trim() : "SEM_MARCA",
+        name: normalizeProductName(input.name),
+        marca: normalizedBrandInput ?? "SEM_MARCA",
         medida: input.medida.trim(),
-        categoria: input.categoria.trim() as typeof input.categoria,
+        categoria: resolveLegacyProductCategoryValue(input.categoria) as typeof input.categoria,
       };
 
       await this.ensureCatalogBindings({
-        marca: normalizedInput.marca,
+        marca: normalizedBrandInput,
         medida: normalizedInput.medida,
         categoria: normalizedInput.categoria,
       });
-      const created = await db.createProductWithInitialMovement(normalizedInput, actor.id);
+      const created = await db.createProductWithInitialMovement(normalizedInput as never, actor.id);
       await this.auditGateway.write({
         action: STOCK_AUDIT_ACTION.PRODUCT_CREATED,
         actor,
@@ -363,6 +278,88 @@ export class ProductsService {
     }
   }
 
+  async createBatch(
+    actor: Actor,
+    input: {
+      name: string;
+      marca?: string;
+      medidas: string[];
+      categoria: string;
+      quantidade: number;
+      estoqueMinimo: number;
+    }
+  ) {
+    const normalizedName = normalizeProductName(input.name);
+    const normalizedBrandInput = input.marca?.trim() || undefined;
+    const normalizedMarca = normalizedBrandInput ?? "SEM_MARCA";
+    const normalizedCategoria = resolveLegacyProductCategoryValue(input.categoria) as typeof input.categoria;
+
+    await this.ensureCatalogBindings({
+      marca: normalizedBrandInput,
+      categoria: normalizedCategoria,
+    });
+
+    // Validate all medidas upfront
+    for (const medida of input.medidas) {
+      await this.ensureCatalogBindings({ medida: medida.trim() });
+    }
+
+    const results: { medida: string; success: boolean; error?: string }[] = [];
+
+    for (const medida of input.medidas) {
+      const trimmedMedida = medida.trim();
+      try {
+        // Check for duplicates before creating
+        const existing = await db.findProductsByCatalogIdentity({
+          name: normalizedName,
+          medida: trimmedMedida,
+          marca: normalizedMarca,
+        });
+        if (existing.length > 0) {
+          results.push({ medida: trimmedMedida, success: false, error: "Produto já cadastrado com esta combinação" });
+          continue;
+        }
+
+        const created = await db.createProductWithInitialMovement(
+          {
+            name: normalizedName,
+            marca: normalizedMarca,
+            medida: trimmedMedida,
+            categoria: normalizedCategoria,
+            quantidade: input.quantidade,
+            estoqueMinimo: input.estoqueMinimo,
+          } as never,
+          actor.id
+        );
+
+        await this.auditGateway.write({
+          action: STOCK_AUDIT_ACTION.PRODUCT_CREATED,
+          actor,
+          target: {
+            productId: created.id,
+            name: created.name,
+            medida: created.medida,
+          },
+          metadata: {
+            estoqueInicial: created.quantidade,
+            estoqueMinimo: created.estoqueMinimo,
+            batchMode: true,
+          },
+        });
+
+        results.push({ medida: trimmedMedida, success: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Erro desconhecido";
+        results.push({ medida: trimmedMedida, success: false, error: message });
+      }
+    }
+
+    const successCount = results.filter((r) => r.success).length;
+    const failCount = results.filter((r) => !r.success).length;
+
+    return { successCount, failCount, results };
+  }
+
   async update(
     actor: Actor,
     input: {
@@ -370,18 +367,7 @@ export class ProductsService {
       name?: string;
       marca?: string;
       medida?: string;
-      categoria?:
-        | "Colchões"
-        | "Roupas de Cama"
-        | "Pillow Top"
-        | "Travesseiros"
-        | "Cabeceiras"
-        | "Box Baú"
-        | "Box Premium"
-        | "Box Tradicional"
-        | "Acessórios"
-        | "Bicamas"
-        | "Camas";
+      categoria?: string;
       quantidade?: number;
       estoqueMinimo?: number;
       ativoParaVenda?: boolean;
@@ -394,10 +380,11 @@ export class ProductsService {
   ) {
     const { id, statusProduto, auditJustification, ...updates } = input;
     const normalizedUpdates = { ...updates };
+    if (normalizedUpdates.name !== undefined) normalizedUpdates.name = normalizeProductName(normalizedUpdates.name);
     if (normalizedUpdates.marca !== undefined) normalizedUpdates.marca = normalizedUpdates.marca.trim();
     if (normalizedUpdates.medida !== undefined) normalizedUpdates.medida = normalizedUpdates.medida.trim();
     if (normalizedUpdates.categoria !== undefined) {
-      normalizedUpdates.categoria = normalizedUpdates.categoria.trim() as typeof normalizedUpdates.categoria;
+      normalizedUpdates.categoria = resolveLegacyProductCategoryValue(normalizedUpdates.categoria) as typeof normalizedUpdates.categoria;
     }
 
     const currentProduct = await db.getProductById(id);
@@ -465,7 +452,7 @@ export class ProductsService {
         medida: normalizedUpdates.medida,
         categoria: normalizedUpdates.categoria,
       });
-      await db.updateProduct(id, normalizedUpdates);
+      await db.updateProduct(id, normalizedUpdates as never);
 
       if (normalizedUpdates.quantidade !== undefined && normalizedUpdates.quantidade !== currentProduct.quantidade) {
         const tipo = normalizedUpdates.quantidade > currentProduct.quantidade ? "entrada" : "saida";

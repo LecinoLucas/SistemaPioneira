@@ -20,12 +20,4 @@ console.log("[prestart] Iniciando validações do ambiente...");
 
 runStep("Checando conexão com banco", process.execPath, ["scripts/db-check.mjs"]);
 
-if (String(process.env.STOCK_V2_DUAL_WRITE).toLowerCase() === "true") {
-  runStep(
-    "Checando consistência base V2",
-    process.execPath,
-    ["scripts/exec-mysql-file.mjs", "scripts/sql/check-inventory-v2.sql"]
-  );
-}
-
 console.log("\n[prestart] Ambiente OK para subir o sistema.");

@@ -478,10 +478,8 @@ function resolveServiceConfig() {
     backend: backendHasOwnPackage
       ? { cmd: npmCmd, args: ["run", "dev"], cwd: backendDir, env: process.env }
       : {
-          // Usa execução direta com tsx (sem watch) para evitar falhas intermitentes
-          // de IPC do "tsx watch" que derrubam o backend e causam ECONNREFUSED no frontend.
-          cmd: "node",
-          args: ["--import", "tsx", "server/_core/index.ts"],
+          cmd: npmCmd,
+          args: ["run", "dev:backend"],
           cwd: ROOT_DIR,
           env: { ...process.env, PORT: "3001", NODE_ENV: "development" },
         },

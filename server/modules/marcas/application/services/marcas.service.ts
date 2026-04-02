@@ -106,13 +106,13 @@ export class MarcasService {
     return appCache.getOrSet(CACHE_PAYMENT_METHODS_KEY, () => db.getAllCatalogPaymentMethods(), CACHE_TTL.LONG);
   }
 
-  async createPaymentMethod(input: { codigo: string; nome: string; categoria: string }) {
+  async createPaymentMethod(input: { nome: string; categoria: string }) {
     const result = await db.createCatalogPaymentMethod(input);
     appCache.invalidatePrefix("catalog:");
     return result;
   }
 
-  async updatePaymentMethod(id: number, input: { codigo: string; nome: string; categoria: string }) {
+  async updatePaymentMethod(id: number, input: { nome: string; categoria: string }) {
     const result = await db.updateCatalogPaymentMethod(id, input);
     appCache.invalidatePrefix("catalog:");
     return result;

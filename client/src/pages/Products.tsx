@@ -10,10 +10,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, Trash2, Search } from "lucide-react";
+import { Plus, Trash2, Search, Layers } from "lucide-react";
 import { downloadFileFromUrl } from "@/lib/download";
 import { toast } from "sonner";
 import { ProductDialogsHost, preloadProductFormDialog } from "@/components/products/ProductDialogsHost";
+import BatchProductDialog from "@/components/products/BatchProductDialog";
 import { ProductFiltersPanel } from "@/components/products/ProductFiltersPanel";
 import { ProductListToolbar } from "@/components/products/ProductListToolbar";
 import { ProductSelectionSummary } from "@/components/products/ProductSelectionSummary";
@@ -21,10 +22,6 @@ import { ProductTableCard } from "@/components/products/ProductTableCard";
 import { ProductTemporaryTrash } from "@/components/products/ProductTemporaryTrash";
 import { useProductActions } from "@/components/products/useProductActions";
 import { useProductListingState } from "@/components/products/useProductListingState";
-import {
-  normalizeProductCategory,
-  PRODUCT_CATEGORY_OPTIONS,
-} from "@/components/products/types";
 import type { DuplicateIdentityMatch, Product, ProductFormData } from "@/components/products/types";
 
 const normalizeIdentityValue = (value?: string | null) =>
@@ -77,7 +74,11 @@ export default function Products() {
   const isAdmin = canPerform("action:products.pricing");
   const canManageProducts = canPerform("action:products.manage");
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [isBatchOpen, setIsBatchOpen] = useState(false);
   const [isEditOpen, setIsEditOpen] = useState(false);
+  const [isCreateBrandDialogOpen, setIsCreateBrandDialogOpen] = useState(false);
+  const [isCreateMeasureDialogOpen, setIsCreateMeasureDialogOpen] = useState(false);
+  const [isCreateTypeDialogOpen, setIsCreateTypeDialogOpen] = useState(false);
   const [isCreateModelDialogOpen, setIsCreateModelDialogOpen] = useState(false);
   const [isDuplicateConfirmOpen, setIsDuplicateConfirmOpen] = useState(false);
   const [duplicateMatches, setDuplicateMatches] = useState<DuplicateIdentityMatch[]>([]);
@@ -92,6 +93,9 @@ export default function Products() {
   const [archiveTarget, setArchiveTarget] = useState<Product | null>(null);
   const [isArchiveDialogOpen, setIsArchiveDialogOpen] = useState(false);
   const [archiveReason, setArchiveReason] = useState("");
+  const [newBrandName, setNewBrandName] = useState("");
+  const [newMeasureName, setNewMeasureName] = useState("");
+  const [newTypeName, setNewTypeName] = useState("");
   const [newModelName, setNewModelName] = useState("");
   const [newModelBrandId, setNewModelBrandId] = useState("");
   const [newModelTypeId, setNewModelTypeId] = useState("");
@@ -180,14 +184,26 @@ export default function Products() {
   });
   const medidasCatalogo = useMemo(() => (medidasDb ?? []).map((item) => item.nome), [medidasDb]);
   const tiposCatalogo = useMemo(() => (tiposDb ?? []).map((item) => item.nome), [tiposDb]);
-  const tiposCatalogoValidos = useMemo(() => {
-    const normalizedFromCatalog = (tiposDb ?? [])
-      .map((item) => normalizeProductCategory(item.nome))
-      .filter((item): item is (typeof PRODUCT_CATEGORY_OPTIONS)[number] => item !== null);
-
-    return Array.from(new Set([...PRODUCT_CATEGORY_OPTIONS, ...normalizedFromCatalog]));
-  }, [tiposDb]);
   const marcasCatalogo = useMemo(() => (marcasDb ?? []).map((item) => item.nome), [marcasDb]);
+
+  useEffect(() => {
+    if (filterMedida !== "all" && !medidasCatalogo.includes(filterMedida)) {
+      setFilterMedida("all");
+    }
+  }, [filterMedida, medidasCatalogo, setFilterMedida]);
+
+  useEffect(() => {
+    if (filterCategoria !== "all" && !tiposCatalogo.includes(filterCategoria)) {
+      setFilterCategoria("all");
+    }
+  }, [filterCategoria, setFilterCategoria, tiposCatalogo]);
+
+  useEffect(() => {
+    if (filterMarca !== "all" && !marcasCatalogo.includes(filterMarca)) {
+      setFilterMarca("all");
+    }
+  }, [filterMarca, marcasCatalogo, setFilterMarca]);
+
   const modelSuggestions = useMemo(() => {
     const brandMap = new Map((marcasDb ?? []).map((item) => [item.id, item.nome]));
     const typeMap = new Map((tiposDb ?? []).map((item) => [item.id, item.nome]));
@@ -235,6 +251,9 @@ export default function Products() {
   const {
     createMutation,
     updateMutation,
+    createBrandMutation,
+    createMeasureMutation,
+    createTypeMutation,
     createModelMutation,
     toggleSaleStatusMutation,
     archiveMutation,
@@ -243,10 +262,17 @@ export default function Products() {
     resetForm,
     handleExportPDF,
     handleCreate,
+    openCreateBrandDialog,
+    openCreateMeasureDialog,
+    openCreateTypeDialog,
     openCreateModelDialog,
+    handleCreateBrandFromDialog,
+    handleCreateMeasureFromDialog,
+    handleCreateTypeFromDialog,
     handleCreateModelFromDialog,
     handleEdit,
     handleUpdate,
+    handleRequestDeleteCurrentProduct,
     handleToggleSaleStatus,
     confirmInactivation,
     handleArchive,
@@ -262,6 +288,9 @@ export default function Products() {
     setEditingProduct,
     setIsCreateOpen,
     setIsEditOpen,
+    setIsCreateBrandDialogOpen,
+    setIsCreateMeasureDialogOpen,
+    setIsCreateTypeDialogOpen,
     setIsCreateModelDialogOpen,
     setIsArchiveDialogOpen,
     setArchiveTarget,
@@ -277,10 +306,16 @@ export default function Products() {
     marcasDb,
     tiposDb,
     medidasCatalogo,
-    tiposCatalogo: tiposCatalogoValidos,
+    tiposCatalogo,
     marcasCatalogo,
     productsItems: (products?.items ?? []) as Product[],
     requestDuplicateConfirmation,
+    newBrandName,
+    setNewBrandName,
+    newMeasureName,
+    setNewMeasureName,
+    newTypeName,
+    setNewTypeName,
     newModelName,
     setNewModelName,
     newModelBrandId,
@@ -458,19 +493,29 @@ export default function Products() {
           </p>
         </div>
         {canManageProducts && (
-          <Button
-            className="gap-2 w-full sm:w-auto min-h-10"
-            onMouseEnter={() => {
-              void preloadProductFormDialog();
-            }}
-            onFocus={() => {
-              void preloadProductFormDialog();
-            }}
-            onClick={() => setIsCreateOpen(true)}
-          >
-            <Plus className="h-4 w-4" />
-            Novo Produto
-          </Button>
+          <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+            <Button
+              variant="outline"
+              className="gap-2 w-full sm:w-auto min-h-10"
+              onClick={() => setIsBatchOpen(true)}
+            >
+              <Layers className="h-4 w-4" />
+              Criar em Lote
+            </Button>
+            <Button
+              className="gap-2 w-full sm:w-auto min-h-10"
+              onMouseEnter={() => {
+                void preloadProductFormDialog();
+              }}
+              onFocus={() => {
+                void preloadProductFormDialog();
+              }}
+              onClick={() => setIsCreateOpen(true)}
+            >
+              <Plus className="h-4 w-4" />
+              Novo Produto
+            </Button>
+          </div>
         )}
       </div>
 
@@ -588,6 +633,12 @@ export default function Products() {
         setIsEditOpen={setIsEditOpen}
         isSaleStatusDialogOpen={isSaleStatusDialogOpen}
         setIsSaleStatusDialogOpen={setIsSaleStatusDialogOpen}
+        isCreateBrandDialogOpen={isCreateBrandDialogOpen}
+        setIsCreateBrandDialogOpen={setIsCreateBrandDialogOpen}
+        isCreateMeasureDialogOpen={isCreateMeasureDialogOpen}
+        setIsCreateMeasureDialogOpen={setIsCreateMeasureDialogOpen}
+        isCreateTypeDialogOpen={isCreateTypeDialogOpen}
+        setIsCreateTypeDialogOpen={setIsCreateTypeDialogOpen}
         isCreateModelDialogOpen={isCreateModelDialogOpen}
         setIsCreateModelDialogOpen={setIsCreateModelDialogOpen}
         isArchiveDialogOpen={isArchiveDialogOpen}
@@ -598,6 +649,9 @@ export default function Products() {
         setIsDeleteConfirmOpen={setIsDeleteConfirmOpen}
         createPending={createMutation.isPending}
         updatePending={updateMutation.isPending}
+        createBrandPending={createBrandMutation.isPending}
+        createMeasurePending={createMeasureMutation.isPending}
+        createTypePending={createTypeMutation.isPending}
         createModelPending={createModelMutation.isPending}
         toggleSaleStatusPending={toggleSaleStatusMutation.isPending}
         archivePending={archiveMutation.isPending}
@@ -605,7 +659,7 @@ export default function Products() {
         formData={formData}
         setFormData={setFormData}
         medidasCatalogo={medidasCatalogo}
-        tiposCatalogo={tiposCatalogoValidos}
+        tiposCatalogo={tiposCatalogo}
         marcasDb={marcasDb}
         tiposDb={tiposDb}
         modelSuggestions={modelSuggestions}
@@ -615,6 +669,10 @@ export default function Products() {
         setAuditJustification={setAuditJustification}
         handleCreate={handleCreate}
         handleUpdate={handleUpdate}
+        handleRequestDeleteCurrentProduct={handleRequestDeleteCurrentProduct}
+        openCreateBrandDialog={openCreateBrandDialog}
+        openCreateMeasureDialog={openCreateMeasureDialog}
+        openCreateTypeDialog={openCreateTypeDialog}
         openCreateModelDialog={openCreateModelDialog}
         resetForm={resetForm}
         saleStatusTarget={saleStatusTarget}
@@ -622,12 +680,21 @@ export default function Products() {
         inactivationReason={inactivationReason}
         setInactivationReason={setInactivationReason}
         confirmInactivation={confirmInactivation}
+        newBrandName={newBrandName}
+        setNewBrandName={setNewBrandName}
+        newMeasureName={newMeasureName}
+        setNewMeasureName={setNewMeasureName}
+        newTypeName={newTypeName}
+        setNewTypeName={setNewTypeName}
         newModelName={newModelName}
         setNewModelName={setNewModelName}
         newModelBrandId={newModelBrandId}
         setNewModelBrandId={setNewModelBrandId}
         newModelTypeId={newModelTypeId}
         setNewModelTypeId={setNewModelTypeId}
+        handleCreateBrandFromDialog={handleCreateBrandFromDialog}
+        handleCreateMeasureFromDialog={handleCreateMeasureFromDialog}
+        handleCreateTypeFromDialog={handleCreateTypeFromDialog}
         handleCreateModelFromDialog={handleCreateModelFromDialog}
         archiveTarget={archiveTarget}
         setArchiveTarget={setArchiveTarget}
@@ -640,6 +707,16 @@ export default function Products() {
         resolveDuplicateConfirmation={resolveDuplicateConfirmation}
         pendingDeletionCount={pendingDeletionIds.size}
         confirmDelete={confirmDelete}
+      />
+
+      <BatchProductDialog
+        open={isBatchOpen}
+        onOpenChange={setIsBatchOpen}
+        marcasDb={marcasDb}
+        medidasCatalogo={medidasCatalogo}
+        tiposCatalogo={tiposCatalogo}
+        tiposDb={tiposDb}
+        modelosDb={modelosDb}
       />
     </div>
   );

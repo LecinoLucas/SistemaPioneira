@@ -1,20 +1,4 @@
-import { encomendas, products, vendas } from "../../drizzle/schema";
-
-export const PRODUCT_CATEGORIES = [
-  "Colchões",
-  "Roupas de Cama",
-  "Pillow Top",
-  "Travesseiros",
-  "Cabeceiras",
-  "Box Baú",
-  "Box Premium",
-  "Box Tradicional",
-  "Acessórios",
-  "Bicamas",
-  "Camas",
-] as const satisfies readonly NonNullable<typeof products.$inferSelect["categoria"]>[];
-
-export type ProductCategory = (typeof PRODUCT_CATEGORIES)[number];
+import { encomendas, vendas } from "../../drizzle/schema";
 
 export const VENDA_TIPOS_TRANSACAO = [
   "venda",
@@ -35,10 +19,6 @@ export const ENCOMENDA_STATUS = [
 ] as const satisfies readonly NonNullable<typeof encomendas.$inferSelect["status"]>[];
 
 export type EncomendaStatus = (typeof ENCOMENDA_STATUS)[number];
-
-export function isProductCategory(value: string): value is ProductCategory {
-  return PRODUCT_CATEGORIES.includes(value as ProductCategory);
-}
 
 export function isVendaTipoTransacao(value: string): value is VendaTipoTransacao {
   return VENDA_TIPOS_TRANSACAO.includes(value as VendaTipoTransacao);

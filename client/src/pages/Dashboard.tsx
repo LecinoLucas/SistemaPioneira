@@ -46,10 +46,6 @@ export default function Dashboard() {
   
   const queryOptions = { staleTime: 60_000, refetchOnWindowFocus: false };
   const { data: stats, isLoading: statsLoading } = trpc.dashboard.stats.useQuery(undefined, queryOptions);
-  const { data: v2Health, isLoading: v2HealthLoading } = trpc.dashboard.v2Health.useQuery(undefined, {
-    ...queryOptions,
-    enabled: isAdmin,
-  });
   const { data: lowStock, isLoading: lowStockLoading } = trpc.products.lowStock.useQuery(undefined, {
     ...queryOptions,
     enabled: canViewStockAlerts,
@@ -296,20 +292,6 @@ export default function Dashboard() {
     );
   }
 
-  const driftDistinct = Math.abs(v2Health?.driftDistinctVsV2 ?? 0);
-  const missingMap = v2Health?.legacyWithoutV2 ?? 0;
-  const missingBalance = v2Health?.v2WithoutBalanceInMatriz ?? 0;
-  const v2Critical = driftDistinct > 0 || missingMap > 0 || missingBalance > 0;
-  const v2Warning = !v2Critical && Math.abs(v2Health?.driftLegacyVsV2 ?? 0) > 0;
-  const v2ToneClass = v2Critical
-    ? "border-destructive/30 bg-destructive/5"
-    : v2Warning
-      ? "border-amber-500/30 bg-amber-500/5"
-      : "border-emerald-500/30 bg-emerald-500/5";
-  const v2MetricClass = (value: number) =>
-    value > 0 ? "text-destructive font-semibold" : "text-emerald-700 dark:text-emerald-300 font-semibold";
-  const v2StatusLabel = v2Critical ? "atenção" : v2Warning ? "aviso" : "ok";
-
   return (
     <div className="space-y-8">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -391,54 +373,6 @@ export default function Dashboard() {
                         : "-"}
                     </p>
                   </div>
-                </div>
-
-                <div className={`mt-4 rounded-lg border p-3 ${v2ToneClass}`}>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs text-muted-foreground">Saúde de Migração V2</p>
-                      <p className="text-sm font-medium mt-1">
-                        Legado x V2 (normalizado)
-                      </p>
-                    </div>
-                    <Badge variant={v2Health?.status === "ok" ? (v2Critical ? "destructive" : v2Warning ? "secondary" : "default") : "destructive"}>
-                      {v2Health?.status === "ok" ? v2StatusLabel : "indisponível"}
-                    </Badge>
-                  </div>
-                  {v2HealthLoading ? (
-                    <p className="text-xs text-muted-foreground mt-3">Carregando métricas V2...</p>
-                  ) : (
-                    <div className="mt-3 grid gap-3 md:grid-cols-3">
-                      <div className="rounded-md bg-muted/40 p-2">
-                        <p className="text-[11px] text-muted-foreground">Totais</p>
-                        <p className="text-sm font-medium">
-                          Legado: {v2Health?.legacyTotal ?? 0} | V2: {v2Health?.v2Total ?? 0}
-                        </p>
-                      </div>
-                      <div className="rounded-md bg-muted/40 p-2">
-                        <p className="text-[11px] text-muted-foreground">Chave Distinta (legado)</p>
-                        <p className="text-sm font-medium">{v2Health?.legacyDistinctCatalogKeyTotal ?? 0}</p>
-                      </div>
-                      <div className="rounded-md bg-muted/40 p-2">
-                        <p className="text-[11px] text-muted-foreground">Drift Distinto x V2</p>
-                        <p className={`text-sm ${v2MetricClass(driftDistinct)}`}>{v2Health?.driftDistinctVsV2 ?? 0}</p>
-                      </div>
-                      <div className="rounded-md bg-muted/40 p-2">
-                        <p className="text-[11px] text-muted-foreground">Sem mapeamento V2</p>
-                        <p className={`text-sm ${v2MetricClass(missingMap)}`}>{v2Health?.legacyWithoutV2 ?? 0}</p>
-                      </div>
-                      <div className="rounded-md bg-muted/40 p-2">
-                        <p className="text-[11px] text-muted-foreground">Sem saldo na MATRIZ</p>
-                        <p className={`text-sm ${v2MetricClass(missingBalance)}`}>{v2Health?.v2WithoutBalanceInMatriz ?? 0}</p>
-                      </div>
-                      <div className="rounded-md bg-muted/40 p-2">
-                        <p className="text-[11px] text-muted-foreground">Modo / Dual Write</p>
-                        <p className="text-sm font-medium">
-                          {v2Health?.readMode ?? "-"} / {v2Health?.dualWriteEnabled ? "on" : "off"}
-                        </p>
-                      </div>
-                    </div>
-                  )}
                 </div>
               </>
             )}

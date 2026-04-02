@@ -1,12 +1,12 @@
 import { z } from "zod";
-import { adminProcedure, protectedProcedure, router } from "../../../../_core/trpc";
+import { adminProcedure, protectedProcedure, publicProcedure, router } from "../../../../_core/trpc";
 import { MarcasService } from "../../application/services/marcas.service";
 import { toTrpcError } from "../../../shared/utils/trpc-error";
 
 const marcasService = new MarcasService();
 
 export const marcasRouter = router({
-  list: protectedProcedure.query(async () => {
+  list: publicProcedure.query(async () => {
     try {
       return await marcasService.list();
     } catch (error) {
@@ -44,7 +44,7 @@ export const marcasRouter = router({
       }
     }),
 
-  listMeasures: protectedProcedure.query(async () => {
+  listMeasures: publicProcedure.query(async () => {
     try {
       return await marcasService.listMeasures();
     } catch (error) {
@@ -82,7 +82,7 @@ export const marcasRouter = router({
       }
     }),
 
-  listTypes: protectedProcedure.query(async () => {
+  listTypes: publicProcedure.query(async () => {
     try {
       return await marcasService.listTypes();
     } catch (error) {
@@ -194,7 +194,6 @@ export const marcasRouter = router({
   createPaymentMethod: adminProcedure
     .input(
       z.object({
-        codigo: z.string().min(1).max(80),
         nome: z.string().min(1).max(120),
         categoria: z.string().min(1).max(60),
       })
@@ -211,7 +210,6 @@ export const marcasRouter = router({
     .input(
       z.object({
         id: z.number().int().positive(),
-        codigo: z.string().min(1).max(80),
         nome: z.string().min(1).max(120),
         categoria: z.string().min(1).max(60),
       })
@@ -219,7 +217,6 @@ export const marcasRouter = router({
     .mutation(async ({ input }) => {
       try {
         return await marcasService.updatePaymentMethod(input.id, {
-          codigo: input.codigo,
           nome: input.nome,
           categoria: input.categoria,
         });

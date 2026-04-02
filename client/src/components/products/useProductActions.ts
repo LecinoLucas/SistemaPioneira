@@ -2,7 +2,12 @@ import { useCallback } from "react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
 import { downloadFileFromUrl } from "@/lib/download";
-import { normalizeProductCategory } from "./types";
+import {
+  normalizeCatalogBrandInput,
+  normalizeCatalogMeasureInput,
+  normalizeCatalogTypeInput,
+  resolveCatalogTypeValue,
+} from "./types";
 import type { DuplicateIdentityMatch, Product, ProductFormData } from "./types";
 
 type CatalogItem = {
@@ -19,6 +24,9 @@ type UseProductActionsParams = {
   setEditingProduct: React.Dispatch<React.SetStateAction<Product | null>>;
   setIsCreateOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setIsEditOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsCreateBrandDialogOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsCreateMeasureDialogOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  setIsCreateTypeDialogOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setIsCreateModelDialogOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setIsArchiveDialogOpen: React.Dispatch<React.SetStateAction<boolean>>;
   setArchiveTarget: React.Dispatch<React.SetStateAction<Product | null>>;
@@ -42,6 +50,12 @@ type UseProductActionsParams = {
     mode: "create" | "update",
     reviewType: "exact" | "similar"
   ) => Promise<boolean>;
+  newBrandName: string;
+  setNewBrandName: React.Dispatch<React.SetStateAction<string>>;
+  newMeasureName: string;
+  setNewMeasureName: React.Dispatch<React.SetStateAction<string>>;
+  newTypeName: string;
+  setNewTypeName: React.Dispatch<React.SetStateAction<string>>;
   newModelName: string;
   setNewModelName: React.Dispatch<React.SetStateAction<string>>;
   newModelBrandId: string;
@@ -114,6 +128,9 @@ export function useProductActions({
   setEditingProduct,
   setIsCreateOpen,
   setIsEditOpen,
+  setIsCreateBrandDialogOpen,
+  setIsCreateMeasureDialogOpen,
+  setIsCreateTypeDialogOpen,
   setIsCreateModelDialogOpen,
   setIsArchiveDialogOpen,
   setArchiveTarget,
@@ -133,6 +150,12 @@ export function useProductActions({
   marcasCatalogo,
   productsItems,
   requestDuplicateConfirmation,
+  newBrandName,
+  setNewBrandName,
+  newMeasureName,
+  setNewMeasureName,
+  newTypeName,
+  setNewTypeName,
   newModelName,
   setNewModelName,
   newModelBrandId,
@@ -200,6 +223,36 @@ export function useProductActions({
     },
     onError: (error) => {
       toast.error(error.message || "Erro ao criar modelo.");
+    },
+  });
+
+  const createBrandMutation = trpc.catalogo.create.useMutation({
+    onSuccess: async () => {
+      await utils.catalogo.list.invalidate();
+      toast.success("Marca criada com sucesso.");
+    },
+    onError: (error) => {
+      toast.error(error.message || "Erro ao criar marca.");
+    },
+  });
+
+  const createTypeMutation = trpc.catalogo.createType.useMutation({
+    onSuccess: async () => {
+      await utils.catalogo.listTypes.invalidate();
+      toast.success("Tipo criado com sucesso.");
+    },
+    onError: (error) => {
+      toast.error(error.message || "Erro ao criar tipo.");
+    },
+  });
+
+  const createMeasureMutation = trpc.catalogo.createMeasure.useMutation({
+    onSuccess: async () => {
+      await utils.catalogo.listMeasures.invalidate();
+      toast.success("Medida criada com sucesso.");
+    },
+    onError: (error) => {
+      toast.error(error.message || "Erro ao criar medida.");
     },
   });
 
@@ -322,12 +375,11 @@ export function useProductActions({
       toast.error("Preencha todos os campos obrigatórios");
       return;
     }
-    const normalizedCategory = normalizeProductCategory(formData.categoria);
     if (!medidasCatalogo.includes(formData.medida)) {
       toast.error("Selecione uma medida válida do catálogo.");
       return;
     }
-    if (!normalizedCategory || !tiposCatalogo.includes(normalizedCategory)) {
+    if (!tiposCatalogo.includes(formData.categoria)) {
       toast.error("Selecione um tipo/categoria válido do catálogo.");
       return;
     }
@@ -345,7 +397,7 @@ export function useProductActions({
       toast.info("Cadastro cancelado para revisão.");
       return;
     }
-    createMutation.mutate({ ...formData, categoria: normalizedCategory } as never);
+    createMutation.mutate(formData as never);
   }, [confirmDuplicateIdentityIfNeeded, createMutation, formData, marcasCatalogo, medidasCatalogo, tiposCatalogo]);
 
   const openCreateModelDialog = useCallback(() => {
@@ -356,6 +408,62 @@ export function useProductActions({
     setNewModelTypeId(selectedType ? String(selectedType.id) : "");
     setIsCreateModelDialogOpen(true);
   }, [formData.categoria, formData.marca, formData.name, marcasDb, setIsCreateModelDialogOpen, setNewModelBrandId, setNewModelName, setNewModelTypeId, tiposDb]);
+
+  const openCreateBrandDialog = useCallback(() => {
+    setNewBrandName(normalizeCatalogBrandInput(formData.marca ?? ""));
+    setIsCreateBrandDialogOpen(true);
+  }, [formData.marca, setIsCreateBrandDialogOpen, setNewBrandName]);
+
+  const openCreateMeasureDialog = useCallback(() => {
+    setNewMeasureName(normalizeCatalogMeasureInput(formData.medida ?? ""));
+    setIsCreateMeasureDialogOpen(true);
+  }, [formData.medida, setIsCreateMeasureDialogOpen, setNewMeasureName]);
+
+  const openCreateTypeDialog = useCallback(() => {
+    setNewTypeName(formData.categoria ?? "");
+    setIsCreateTypeDialogOpen(true);
+  }, [formData.categoria, setIsCreateTypeDialogOpen, setNewTypeName]);
+
+  const handleCreateBrandFromDialog = useCallback(async () => {
+    const nome = normalizeCatalogBrandInput(newBrandName.trim());
+    if (!nome) {
+      toast.error("Informe o nome da marca.");
+      return;
+    }
+
+    await createBrandMutation.mutateAsync({ nome });
+    setFormData((prev) => ({ ...prev, marca: nome }));
+    setIsCreateBrandDialogOpen(false);
+  }, [createBrandMutation, newBrandName, setFormData, setIsCreateBrandDialogOpen]);
+
+  const handleCreateMeasureFromDialog = useCallback(async () => {
+    const nome = normalizeCatalogMeasureInput(newMeasureName.trim());
+    if (!nome) {
+      toast.error("Informe o nome da medida.");
+      return;
+    }
+
+    await createMeasureMutation.mutateAsync({ nome });
+    setFormData((prev) => ({ ...prev, medida: nome }));
+    setIsCreateMeasureDialogOpen(false);
+  }, [createMeasureMutation, newMeasureName, setFormData, setIsCreateMeasureDialogOpen]);
+
+  const handleCreateTypeFromDialog = useCallback(async () => {
+    const nome = normalizeCatalogTypeInput(newTypeName.trim());
+    if (!nome) {
+      toast.error("Informe o nome do tipo.");
+      return;
+    }
+
+    const created = await createTypeMutation.mutateAsync({ nome });
+    const resolvedName = resolveCatalogTypeValue(created?.nome ?? nome, tiposCatalogo);
+    const resolvedId = created?.id != null ? String(created.id) : "";
+    setFormData((prev) => ({ ...prev, categoria: resolvedName }));
+    if (resolvedId) {
+      setNewModelTypeId(resolvedId);
+    }
+    setIsCreateTypeDialogOpen(false);
+  }, [createTypeMutation, newTypeName, setFormData, setIsCreateTypeDialogOpen, setNewModelTypeId, tiposCatalogo]);
 
   const handleCreateModelFromDialog = useCallback(async () => {
     const nome = newModelName.trim();
@@ -389,26 +497,25 @@ export function useProductActions({
   const handleEdit = useCallback((product: Product) => {
     setEditingProduct(product);
     setAuditJustification("");
-    const normalizedCategory = normalizeProductCategory(product.categoria) ?? product.categoria;
+    const resolvedCategory = resolveCatalogTypeValue(product.categoria, tiposCatalogo);
     setFormData({
       name: product.name,
       marca: product.marca || "",
       medida: product.medida,
-      categoria: normalizedCategory,
+      categoria: resolvedCategory,
       quantidade: product.quantidade,
       estoqueMinimo: product.estoqueMinimo,
     });
     setIsEditOpen(true);
-  }, [setAuditJustification, setEditingProduct, setFormData, setIsEditOpen]);
+  }, [setAuditJustification, setEditingProduct, setFormData, setIsEditOpen, tiposCatalogo]);
 
   const handleUpdate = useCallback(async () => {
     if (!editingProduct) return;
-    const normalizedCategory = normalizeProductCategory(formData.categoria);
     if (!medidasCatalogo.includes(formData.medida)) {
       toast.error("Selecione uma medida válida cadastrada em Categorias.");
       return;
     }
-    if (!normalizedCategory || !tiposCatalogo.includes(normalizedCategory)) {
+    if (!tiposCatalogo.includes(formData.categoria)) {
       toast.error("Selecione um tipo/categoria válido cadastrado em Categorias.");
       return;
     }
@@ -434,7 +541,7 @@ export function useProductActions({
     if (formData.name !== editingProduct.name) payload.name = formData.name;
     if ((formData.marca || null) !== (editingProduct.marca || null)) payload.marca = formData.marca;
     if (formData.medida !== editingProduct.medida) payload.medida = formData.medida;
-    if (normalizedCategory !== editingProduct.categoria) payload.categoria = normalizedCategory;
+    if (formData.categoria !== editingProduct.categoria) payload.categoria = formData.categoria;
     if (formData.quantidade !== editingProduct.quantidade) payload.quantidade = formData.quantidade;
     if (formData.estoqueMinimo !== editingProduct.estoqueMinimo) payload.estoqueMinimo = formData.estoqueMinimo;
 
@@ -458,6 +565,25 @@ export function useProductActions({
 
     updateMutation.mutate(payload as never);
   }, [auditJustification, confirmDuplicateIdentityIfNeeded, editingProduct, formData, marcasCatalogo, medidasCatalogo, tiposCatalogo, updateMutation]);
+
+  const handleRequestDeleteCurrentProduct = useCallback(() => {
+    if (!editingProduct) return;
+
+    setPendingDeletionIds(new Set([editingProduct.id]));
+    setPendingDeletionSnapshot({ [editingProduct.id]: editingProduct });
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.delete(editingProduct.id);
+      return next;
+    });
+    setIsDeleteConfirmOpen(true);
+  }, [
+    editingProduct,
+    setIsDeleteConfirmOpen,
+    setPendingDeletionIds,
+    setPendingDeletionSnapshot,
+    setSelectedIds,
+  ]);
 
   const handleToggleSaleStatus = useCallback((product: Product) => {
     if (product.arquivado) {
@@ -574,17 +700,41 @@ export function useProductActions({
         setPendingDeletionIds(new Set());
         setPendingDeletionSnapshot({});
       }
+
+      if (editingProduct && !failedIdSet.has(editingProduct.id) && ids.includes(editingProduct.id)) {
+        setIsEditOpen(false);
+        setEditingProduct(null);
+        setAuditJustification("");
+      }
     } catch {
       toast.error("Erro ao excluir produtos.");
     } finally {
       setSelectedIds(new Set());
       setIsDeleteConfirmOpen(false);
     }
-  }, [deleteBatchMutation, pendingDeletionIds, setIsDeleteConfirmOpen, setLastDeleteSummary, setPendingDeletionIds, setPendingDeletionSnapshot, setSelectedIds, utils.dashboard.stats, utils.products.list, utils.products.lowStock]);
+  }, [
+    deleteBatchMutation,
+    editingProduct,
+    pendingDeletionIds,
+    setAuditJustification,
+    setEditingProduct,
+    setIsDeleteConfirmOpen,
+    setIsEditOpen,
+    setLastDeleteSummary,
+    setPendingDeletionIds,
+    setPendingDeletionSnapshot,
+    setSelectedIds,
+    utils.dashboard.stats,
+    utils.products.list,
+    utils.products.lowStock,
+  ]);
 
   return {
     createMutation,
     updateMutation,
+    createBrandMutation,
+    createMeasureMutation,
+    createTypeMutation,
     createModelMutation,
     toggleSaleStatusMutation,
     archiveMutation,
@@ -593,10 +743,17 @@ export function useProductActions({
     resetForm,
     handleExportPDF,
     handleCreate,
+    openCreateBrandDialog,
+    openCreateMeasureDialog,
+    openCreateTypeDialog,
     openCreateModelDialog,
+    handleCreateBrandFromDialog,
+    handleCreateMeasureFromDialog,
+    handleCreateTypeFromDialog,
     handleCreateModelFromDialog,
     handleEdit,
     handleUpdate,
+    handleRequestDeleteCurrentProduct,
     handleToggleSaleStatus,
     confirmInactivation,
     handleArchive,

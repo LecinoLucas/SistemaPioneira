@@ -21,18 +21,6 @@ interface CartItem {
 
 type PaymentMethodOption = { key: string; label: string; category: string };
 
-const DEFAULT_PAYMENT_METHODS: PaymentMethodOption[] = [
-  { key: "PIX", label: "PIX", category: "Instantâneo" },
-  { key: "RECEBER_NA_ENTREGA", label: "RECEBER NA ENTREGA", category: "Entrega" },
-  { key: "DINHEIRO", label: "DINHEIRO", category: "Dinheiro" },
-  { key: "CARTAO_CREDITO", label: "CARTÃO DE CRÉDITO", category: "Cartão" },
-  { key: "CARTAO_DEBITO", label: "CARTÃO DE DÉBITO", category: "Cartão" },
-  { key: "BOLETO", label: "BOLETO", category: "Boleto" },
-  { key: "TRANSFERENCIA", label: "TRANSFERÊNCIA", category: "Transferência" },
-  { key: "MULTIPLO", label: "MÚLTIPLO (2+ formas)", category: "Combinado" },
-  { key: "OUTROS", label: "OUTROS", category: "Outros" },
-];
-
 export default function PublicSales() {
   const [searchTerm, setSearchTerm] = useState("");
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
@@ -47,16 +35,31 @@ export default function PublicSales() {
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   });
+  const measuresQuery = trpc.catalogo.listMeasures.useQuery(undefined, {
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+  const typesQuery = trpc.catalogo.listTypes.useQuery(undefined, {
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
   const paymentMethods = useMemo<PaymentMethodOption[]>(() => {
-    const fromCatalog = (paymentMethodsQuery.data ?? [])
+    return (paymentMethodsQuery.data ?? [])
       .filter((item) => item.codigo?.trim() && item.nome?.trim())
       .map((item) => ({
         key: item.codigo.trim().toUpperCase(),
         label: item.nome.trim(),
         category: item.categoria?.trim() || "Outros",
       }));
-    return fromCatalog.length > 0 ? fromCatalog : DEFAULT_PAYMENT_METHODS;
   }, [paymentMethodsQuery.data]);
+  const availableMeasures = useMemo(
+    () => (measuresQuery.data ?? []).map((item) => item.nome.trim()).filter(Boolean),
+    [measuresQuery.data]
+  );
+  const availableCategories = useMemo(
+    () => (typesQuery.data ?? []).map((item) => item.nome.trim()).filter(Boolean),
+    [typesQuery.data]
+  );
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearchTerm(searchTerm), 300);
@@ -66,6 +69,24 @@ export default function PublicSales() {
   useEffect(() => {
     setVisibleCount(20);
   }, [debouncedSearchTerm, selectedMedida, selectedCategoria]);
+
+  useEffect(() => {
+    if (selectedMedida !== "all" && !availableMeasures.includes(selectedMedida)) {
+      setSelectedMedida("all");
+    }
+  }, [availableMeasures, selectedMedida]);
+
+  useEffect(() => {
+    if (selectedCategoria !== "all" && !availableCategories.includes(selectedCategoria)) {
+      setSelectedCategoria("all");
+    }
+  }, [availableCategories, selectedCategoria]);
+
+  useEffect(() => {
+    if (formaPagamento && !paymentMethods.some((item) => item.key === formaPagamento)) {
+      setFormaPagamento("");
+    }
+  }, [formaPagamento, paymentMethods]);
 
   const { data: products, isLoading, error: productsError, refetch } = trpc.products.list.useQuery({
     searchTerm: debouncedSearchTerm || undefined,
@@ -250,11 +271,11 @@ export default function PublicSales() {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">Todas</SelectItem>
-                        <SelectItem value="Solteiro">Solteiro</SelectItem>
-                        <SelectItem value="Solteirão">Solteirão</SelectItem>
-                        <SelectItem value="Casal">Casal</SelectItem>
-                        <SelectItem value="Queen">Queen</SelectItem>
-                        <SelectItem value="King">King</SelectItem>
+                        {availableMeasures.map((measure) => (
+                          <SelectItem key={measure} value={measure}>
+                            {measure}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
@@ -266,14 +287,11 @@ export default function PublicSales() {
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">Todas</SelectItem>
-                        <SelectItem value="Colchões">Colchões</SelectItem>
-                        <SelectItem value="Roupas de Cama">Roupas de Cama</SelectItem>
-                        <SelectItem value="Pillow Top">Pillow Top</SelectItem>
-                        <SelectItem value="Travesseiros">Travesseiros</SelectItem>
-                        <SelectItem value="Cabeceiras">Cabeceiras</SelectItem>
-                        <SelectItem value="Box Baú">Box Baú</SelectItem>
-                        <SelectItem value="Box Premium">Box Premium</SelectItem>
-                        <SelectItem value="Box Tradicional">Box Tradicional</SelectItem>
+                        {availableCategories.map((category) => (
+                          <SelectItem key={category} value={category}>
+                            {category}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
@@ -422,7 +440,7 @@ export default function PublicSales() {
                       <div className="space-y-2">
                         <Label htmlFor="formaPagamento">Forma de Pagamento</Label>
                         <Select value={formaPagamento} onValueChange={setFormaPagamento}>
-                          <SelectTrigger id="formaPagamento">
+                          <SelectTrigger id="formaPagamento" disabled={paymentMethods.length === 0}>
                             <SelectValue placeholder="Selecione a forma de pagamento" />
                           </SelectTrigger>
                           <SelectContent>
@@ -433,6 +451,11 @@ export default function PublicSales() {
                             ))}
                           </SelectContent>
                         </Select>
+                        {paymentMethods.length === 0 && (
+                          <p className="text-xs text-muted-foreground">
+                            Cadastre formas de pagamento em Categorias para liberar as vendas.
+                          </p>
+                        )}
                       </div>
                       <div className="space-y-2">
                         <Label htmlFor="tipoTransacao">Tipo de Transação</Label>
@@ -451,7 +474,7 @@ export default function PublicSales() {
                       </div>
                       <Button
                         onClick={handleFinalizeSale}
-                        disabled={registerSaleMutation.isPending || !formaPagamento}
+                        disabled={registerSaleMutation.isPending || !formaPagamento || paymentMethods.length === 0}
                         className="w-full gap-2"
                         size="lg"
                       >

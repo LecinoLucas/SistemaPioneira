@@ -57,6 +57,31 @@ Checklist rapido:
 - Node.js 18+
 - pnpm
 - MySQL 8+
+- Homebrew no macOS
+- `poppler` para fornecer o comando `pdftotext` usado na importação de PDFs
+
+Bootstrap recomendado em uma máquina nova:
+
+```bash
+# macOS
+brew install node pnpm mysql poppler
+```
+
+Ou use o script de bootstrap do projeto:
+
+```bash
+chmod +x scripts/setup-macos.sh
+./scripts/setup-macos.sh
+```
+
+Verificação rápida dos binários principais:
+
+```bash
+node -v
+pnpm -v
+mysql --version
+pdftotext -v
+```
 
 ## Configuração
 
@@ -101,6 +126,14 @@ Auditoria (opcional):
 
 ```bash
 pnpm install
+```
+
+Dependência importante para importação de PDF:
+- Se `pdftotext` não estiver instalado, a importação ainda funciona com fallback interno, mas pode ficar bem mais lenta.
+- Em macOS, instale com:
+
+```bash
+brew install poppler
 ```
 
 ## Banco de dados
